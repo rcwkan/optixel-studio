@@ -187,7 +187,7 @@ export const THEMES: ThemeInfo[] = [
 
 export function getStoredTheme(): Theme {
   try {
-    const t = (localStorage.getItem("optixel-theme") || localStorage.getItem("openlight-theme")) as Theme | null;
+    const t = localStorage.getItem("optixel-theme") as Theme | null;
     if (
       t &&
       [

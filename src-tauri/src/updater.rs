@@ -526,7 +526,6 @@ pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateInfo, Stri
         let core = app.try_state::<crate::St>();
         core.and_then(|c| c.settings.lock().ok().and_then(|s| s.license_key.clone()))
             .or_else(|| std::env::var("OPTIXEL_LICENSE_KEY").ok())
-            .or_else(|| std::env::var("OPENLIGHT_LICENSE_KEY").ok())
     };
 
     // Attempt cryptographic update check via tauri-plugin-updater

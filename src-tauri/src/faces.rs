@@ -542,12 +542,12 @@ mod tests {
         assert_eq!(st["by_year"], json!([["2020", 1], ["2021", 2]]));
     }
 
-    /// Needs OPTIXEL_TEST_AI=1 (or OPENLIGHT_TEST_AI=1) and the face model (or face swap model) installed in the app's data folder:
+    /// Needs OPTIXEL_TEST_AI=1 and the face model (or face swap model) installed in the app's data folder:
     /// scans two copies of the demo portrait and the demo landscape, and expects one person in two photos.
     #[test]
     #[cfg(unix)]
     fn scan_groups_the_same_face() {
-        if std::env::var_os("OPTIXEL_TEST_AI").or_else(|| std::env::var_os("OPENLIGHT_TEST_AI")).is_none() {
+        if std::env::var_os("OPTIXEL_TEST_AI").is_none() {
             return;
         }
         let tmp = std::env::temp_dir().join(format!("ols-faces-test-{}", crate::new_token()));

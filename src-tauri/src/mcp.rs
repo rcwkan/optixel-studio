@@ -467,7 +467,6 @@ fn call_tool(core: &Arc<Core>, name: &str, a: &Value) -> Value {
 
 fn read_resource(core: &Arc<Core>, uri: &str) -> Result<Value, String> {
     let rest = uri.strip_prefix("optixel://")
-        .or_else(|| uri.strip_prefix("openlight://"))
         .ok_or_else(|| format!("unknown resource {uri}"))?;
     let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
     let q = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(&format!("{k}=")).and_then(|v| v.parse::<u32>().ok()));

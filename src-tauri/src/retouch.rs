@@ -156,14 +156,14 @@ mod tests {
     /// A photo through the model: OPTIXEL_TEST_RAW=<file>, OPTIXEL_TEST_OUT=<folder> for before/after PNGs.
     #[test]
     fn adjusts_a_real_photo() {
-        let Some(p) = std::env::var_os("OPTIXEL_TEST_RAW").or_else(|| std::env::var_os("OPENLIGHT_TEST_RAW")) else { return };
+        let Some(p) = std::env::var_os("OPTIXEL_TEST_RAW") else { return };
         let img = develop::load(std::path::Path::new(&p), Some(1600)).unwrap();
         let t = std::time::Instant::now();
         let d = adjust(&img, &Develop::default(), None, 1.0, 1.0).unwrap();
         eprintln!("RETOUCH {} ms; tone {:?} wb {:?} presence {:?}", t.elapsed().as_millis(), d.basic_tone, d.white_balance, d.presence);
         let styled = adjust(&img, &Develop::default(), Some("vivid"), 1.0, 1.0).unwrap();
         eprintln!("RETOUCH vivid: tone {:?} presence {:?}", styled.basic_tone, styled.presence);
-        if let Some(out) = std::env::var_os("OPTIXEL_TEST_OUT").or_else(|| std::env::var_os("OPENLIGHT_TEST_OUT")) {
+        if let Some(out) = std::env::var_os("OPTIXEL_TEST_OUT") {
             let small = shrink(&img, 900);
             let wb = develop::auto_wb(&img);
             let auto = Develop { basic_tone: develop::auto_tone(&img, &wb), white_balance: wb, ..Default::default() };

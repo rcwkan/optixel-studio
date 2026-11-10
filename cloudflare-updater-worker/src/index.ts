@@ -45,7 +45,7 @@ export default {
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Optixel-License-Key, X-OpenLight-License-Key",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Optixel-License-Key",
     };
 
     if (request.method === "OPTIONS") {
@@ -333,7 +333,7 @@ function extractLicenseKey(request: Request, url: URL): string | null {
     return authHeader.slice(7).trim();
   }
 
-  const customHeader = request.headers.get("X-Optixel-License-Key") || request.headers.get("X-OpenLight-License-Key");
+  const customHeader = request.headers.get("X-Optixel-License-Key");
   if (customHeader) {
     return customHeader.trim();
   }
