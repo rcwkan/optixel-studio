@@ -52,7 +52,7 @@ export function PhotoViewer({
   // Toggles and modes (info HUD popup is hidden by default)
   const [showInfo, setShowInfo] = useState(() => {
     try {
-      const stored = localStorage.getItem("optixel_viewer_show_info") ?? localStorage.getItem("openlight_viewer_show_info");
+      const stored = localStorage.getItem("optixel_viewer_show_info");
       return stored === "true"; // defaults to false
     } catch {
       return false;

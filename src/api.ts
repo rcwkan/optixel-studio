@@ -888,7 +888,7 @@ export function spline(pts: number[][]): (x: number) => number {
 const ROOTS_KEY = "optixel.folderRoots";
 export const loadRoots = (): string[] => {
   try {
-    return JSON.parse(localStorage.getItem(ROOTS_KEY) ?? localStorage.getItem("openlight.folderRoots") ?? "[]");
+    return JSON.parse(localStorage.getItem(ROOTS_KEY) ?? "[]");
   } catch {
     return [];
   }
@@ -907,7 +907,7 @@ export const forgetRoot = (p: string) => saveRoots(loadRoots().filter((r) => r !
 const LAST_FOLDER_KEY = "optixel.lastFolder";
 export const loadLastFolder = (): string | null => {
   try {
-    return localStorage.getItem(LAST_FOLDER_KEY) ?? localStorage.getItem("openlight.lastFolder");
+    return localStorage.getItem(LAST_FOLDER_KEY);
   } catch {
     return null;
   }

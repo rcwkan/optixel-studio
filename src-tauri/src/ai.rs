@@ -450,8 +450,7 @@ fn run_cli(core: &Arc<Core>, p: &Provider, id: i64, prompt: &str, dir: &PathBuf,
     let snap = snapshot(core, id, dir)?;
     let mcp_config = dir.join("mcp.json");
     let cfg = json!({ "mcpServers": {
-        "optixel": { "type": "http", "url": url, "headers": { "Authorization": format!("Bearer {token}") } },
-        "openlight": { "type": "http", "url": url, "headers": { "Authorization": format!("Bearer {token}") } }
+        "optixel": { "type": "http", "url": url, "headers": { "Authorization": format!("Bearer {token}") } }
     } });
     std::fs::write(&mcp_config, cfg.to_string()).map_err(es)?;
     let agent_prompt = agent.unwrap_or_else(|| format!(
@@ -495,9 +494,6 @@ fn run_cli(core: &Arc<Core>, p: &Provider, id: i64, prompt: &str, dir: &PathBuf,
         .env("OPTIXEL_MCP_URL", &url)
         .env("OPTIXEL_MCP_TOKEN", &token)
         .env("OPTIXEL_PHOTO_ID", id.to_string())
-        .env("OPENLIGHT_MCP_URL", &url)
-        .env("OPENLIGHT_MCP_TOKEN", &token)
-        .env("OPENLIGHT_PHOTO_ID", id.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

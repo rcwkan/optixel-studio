@@ -8,7 +8,7 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <script>
       try {
-        const saved = localStorage.getItem("optixel-theme") || localStorage.getItem("openlight-theme") || "system";
+        const saved = localStorage.getItem("optixel-theme") || "system";
         document.documentElement.setAttribute("data-theme", saved);
         const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
         const meta = document.querySelector('meta[name="color-scheme"]');

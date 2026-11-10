@@ -157,7 +157,7 @@ pub fn pointer_file() -> PathBuf {
 
 /// Check if a custom storage directory is configured via environment variable or pointer file.
 pub fn configured_data_dir() -> Option<PathBuf> {
-    if let Some(custom) = std::env::var_os("OPTIXEL_DATA_DIR").or_else(|| std::env::var_os("OPENLIGHT_DATA_DIR")) {
+    if let Some(custom) = std::env::var_os("OPTIXEL_DATA_DIR") {
         let p = PathBuf::from(custom);
         if p.is_dir() {
             return Some(p);
@@ -212,7 +212,7 @@ pub fn configured_data_dir() -> Option<PathBuf> {
     }
 }
 
-/// Catalog location; `OPTIXEL_DATA_DIR` (or `OPENLIGHT_DATA_DIR`) selects another catalog folder.
+/// Catalog location; `OPTIXEL_DATA_DIR` selects another catalog folder.
 pub fn data_dir() -> PathBuf {
     configured_data_dir().unwrap_or_else(default_data_dir)
 }

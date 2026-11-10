@@ -5361,10 +5361,10 @@ mod gpu_tests {
 
 #[cfg(test)]
 mod raw_size_tests {
-    /// Set OPTIXEL_TEST_RAW (or OPENLIGHT_TEST_RAW) to a RAW file to check the header size (skipped otherwise).
+    /// Set OPTIXEL_TEST_RAW to a RAW file to check the header size (skipped otherwise).
     #[test]
     fn raw_size_is_full_sensor() {
-        let Some(p) = std::env::var_os("OPTIXEL_TEST_RAW").or_else(|| std::env::var_os("OPENLIGHT_TEST_RAW")) else { return };
+        let Some(p) = std::env::var_os("OPTIXEL_TEST_RAW") else { return };
         let (w, h) = super::raw_size(std::path::Path::new(&p)).expect("raw size");
         eprintln!("raw_size = {w}x{h} ({:.1} MP)", (w * h) as f64 / 1e6);
         let raw = rawler::decode_file(std::path::Path::new(&p)).unwrap();
