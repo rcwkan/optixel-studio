@@ -299,7 +299,7 @@ pub fn folders(c: &Connection) -> Result<Vec<(String, i64)>, String> {
     rows.collect::<Result<_, _>>().map_err(es)
 }
 
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default)]
 pub struct Culling {
     pub rating: Option<i64>,
@@ -821,13 +821,16 @@ pub fn read_sidecar_with_id(path: &Path) -> Option<(Option<i64>, Develop)> {
 
 /// Masters only (virtual copies live in the catalog, as in Lightroom); Immich photos keep
 /// their edits in the catalog. Best effort: read-only volumes just skip the sidecar.
-/// ponytail: OpenLight JSON only; read/write Adobe `crs:` XMP when ACR round-trips matter.
+/// ponytail: Optixel JSON only; read/write Adobe `crs:` XMP when ACR round-trips matter.
 pub fn write_sidecar(p: &Photo, d: &Develop) {
     if p.master_id.is_some() || crate::remote::immich_id(&p.path).is_some() {
         return;
     }
     if let Err(e) = fs::write(sidecar_path(&p.path), sidecar_json(p, d)) {
         eprintln!("sidecar {}: {e}", p.path);
+    }
+    if crate::xmp::candidate_xmp_paths(Path::new(&p.path)).iter().any(|x| x.is_file()) {
+        let _ = crate::xmp::write_adobe_xmp(p, d, None, None);
     }
 }
 
@@ -1069,28 +1072,39 @@ pub fn import_files(core: &Core, mut files: Vec<PathBuf>, progress: &(dyn Fn(usi
         let (batch, tail) = rest.split_at(size.min(rest.len()));
         rest = tail;
         size = 32;
-        let metas: Vec<(PathBuf, Meta, Option<i64>, Develop)> = pool.install(|| {
+        let metas: Vec<(PathBuf, Meta, Option<i64>, Develop, Option<Culling>)> = pool.install(|| {
             batch
                 .par_iter()
                 .map(|p| {
                     let m = read_exif(p);
-                    let (sid, d) = read_sidecar_with_id(p).unwrap_or_else(|| (None, read_sidecar(p).unwrap_or_default()));
-                    (p.clone(), m, sid, d)
+                    let ax = crate::xmp::read_adobe_xmp(p, None);
+                    let (sid, d) = read_sidecar_with_id(p)
+                        .or_else(|| read_sidecar(p).map(|d| (None, d)))
+                        .unwrap_or_else(|| (None, ax.as_ref().map(|x| x.develop.clone()).unwrap_or_default()));
+                    let cull = ax.as_ref().and_then(crate::xmp::to_culling);
+                    (p.clone(), m, sid, d, cull)
                 })
                 .collect()
         });
         let mut added: Vec<(i64, PathBuf, u8)> = vec![];
+        let mut culls: Vec<(i64, Culling)> = vec![];
         {
             let mut c = core.db();
             let tx = c.transaction().map_err(es)?;
-            for (p, m, sid, d) in &metas {
+            for (p, m, sid, d, cull) in &metas {
                 let folder = p.parent().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
                 let name = p.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
                 if let Some(id) = add_photo_with_id(&tx, *sid, &p.to_string_lossy(), &folder, &name, m, d)? {
                     added.push((id, p.clone(), m.orientation));
+                    if let Some(cu) = cull {
+                        culls.push((id, cu.clone()));
+                    }
                 }
             }
             tx.commit().map_err(es)?;
+            for (id, cu) in culls {
+                let _ = update(&c, &[id], &cu);
+            }
         }
         let dims: Vec<(i64, u32, u32)> = pool.install(|| {
             added

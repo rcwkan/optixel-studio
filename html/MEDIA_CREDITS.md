@@ -1,6 +1,6 @@
 # Media Credits & Licensing Verification
 
-All photographic images included in the OpenLight Studio web application and interactive demo (`html/`) are free for commercial and personal use with zero copyright restrictions:
+All photographic images included in the Optixel Studio web application and interactive demo (`html/`) are free for commercial and personal use with zero copyright restrictions:
 
 ---
 
@@ -11,7 +11,7 @@ All photographic images included in the OpenLight Studio web application and int
 - **Photographer**: Sorin Tudorut ([@sharpixdigital](https://unsplash.com/@sharpixdigital))
 - **Source Repository**: [Wikimedia Commons File:Eilean Donan Castle on a cloudy day (Unsplash).jpg](https://commons.wikimedia.org/wiki/File:Eilean_Donan_Castle_on_a_cloudy_day_(Unsplash).jpg)
 - **License**: [Creative Commons CC0 1.0 Universal (CC0 1.0) Public Domain Dedication](https://creativecommons.org/publicdomain/zero/1.0/)
-- **Usage in OpenLight Studio**: Interactive RAW Develop exposure, split before/after tone curve comparisons, and spatial culling grid.
+- **Usage in Optixel Studio**: Interactive RAW Develop exposure, split before/after tone curve comparisons, and spatial culling grid.
 
 ---
 
@@ -22,7 +22,7 @@ All photographic images included in the OpenLight Studio web application and int
 - **Photographer**: Corey Saldana ([@corey_saldana](https://unsplash.com/@corey_saldana))
 - **Source URL**: [Unsplash photo VJStJwfnvYM](https://unsplash.com/photos/woman-in-black-brassiere-and-blue-denim-jeans-sitting-on-brown-concrete-stairs-during-daytime-VJStJwfnvYM)
 - **License**: [Unsplash License](https://unsplash.com/license) (Free to download and use for commercial and non-commercial purposes, no permission required)
-- **Usage in OpenLight Studio**: Interactive portrait grading, natural daylight tone reproduction, and AI subject segmentation (face, hair, outfit & jeans, concrete stairs).
+- **Usage in Optixel Studio**: Interactive portrait grading, natural daylight tone reproduction, and AI subject segmentation (face, hair, outfit & jeans, concrete stairs).
 
 ---
 

@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-const INSTRUCTIONS: &str = "OpenLight Studio photo catalog and non-destructive RAW editor. \
+const INSTRUCTIONS: &str = "Optixel Studio photo catalog and non-destructive RAW editor. \
 Find photos with catalog_query, look at them with photo_inspect (preview image + histogram telemetry), \
 edit with develop_apply_parameters / mask_create_and_edit, verify with photo_inspect again. \
 Select an object by tracing it as a polygon mask; remove objects with retouch_remove_objects. \
@@ -73,13 +73,14 @@ pub fn tools() -> Value {
             "hdr": { "type": "object", "description": "HDR Toning: enabled bool; method fusion (default: merge a simulated bracket of frames 2-9 exposures ev_spacing 0.5-4 stops apart, weighted by exposedness / contrast_weight / saturation_weight 0-200; natural 0-100 keeps bright areas such as skies bright, 60 by default) | local (local adaptation) | equalize (equalize histogram) | gamma (exposure and gamma) | highlights (highlight compression); local only: radius 0-100 (region size), edge 0-100 (how firmly it stops at edges), smooth_edges bool (fewer halos), compression 0-100 (squeeze the range), detail -100..300 %, shadows / highlights -100..100; any method: exposure -5..5 EV, gamma 0.1-3 (above 1 opens the shadows), fine_detail -100..300 %, vibrance / saturation -100..100, curve [[x, y], ...] 0-255 on display brightness" },
             "filters": { "type": "object", "description": "blur 0-100 (Gaussian), invert bool, posterize levels (0 = off, 2-255), threshold (0 = off, 1-255)" },
             "image_rotation": { "type": "object", "description": "angle 0 / 90 / 180 / 270 clockwise, flip_h, flip_v bool; the crop is in the rotated frame" },
-            "crop": { "type": "object", "description": "x, y, w, h normalised 0-1 in the straightened, rotated frame; angle -45..45 degrees" }
+            "crop": { "type": "object", "description": "x, y, w, h normalised 0-1 in the straightened, rotated frame; angle -45..45 degrees" },
+            "raw": { "type": "object", "description": "Native C++ LibRaw engine & optical calibration: engine (''=auto | 'libraw'), demosaic ('rcd' | 'amaze' | 'lmmse' | 'ahd' | 'dcb' | 'dht' | 'aahd' | 'ppg' | 'vng' | 'linear'), highlights ('clip' | 'unclip' | 'blend' | 'rebuild'), black_offset (-512..512 ADU), raw_denoise (0..100 linear Bayer/X-Trans pre-color sensor denoising)" }
         }
     });
     json!([
         {
             "name": "catalog_query",
-            "description": "Search and filter the OpenLight catalog by rating, flag, camera/lens and text. semantic_query is matched against filenames, keywords, camera and lens (no vision embedding model is installed in this build). min_eye_sharpness filters on the main subject's sharpness (0-100) measured by the auto functions; photos not analysed yet are left out.",
+            "description": "Search and filter the Optixel catalog by rating, flag, camera/lens and text. semantic_query is matched against filenames, keywords, camera and lens (no vision embedding model is installed in this build). min_eye_sharpness filters on the main subject's sharpness (0-100) measured by the auto functions; photos not analysed yet are left out.",
             "inputSchema": { "type": "object", "properties": {
                 "semantic_query": { "type": "string" },
                 "min_rating": { "type": "integer", "minimum": 0, "maximum": 5 },
@@ -132,18 +133,18 @@ pub fn tools() -> Value {
         },
         {
             "name": "batch_export",
-            "description": "Export photos at full resolution with their current edits. Formats: JPEG, AVIF, PNG_16, TIFF_16. Color spaces: sRGB, DisplayP3, AdobeRGB, Rec2020_HDR (PQ, PNG_16/TIFF_16 only). Existing files are never overwritten.",
+            "description": "Export photos at full resolution with their current edits. Formats: JPEG, AVIF, PNG_16, TIFF_16. Color spaces: sRGB, DisplayP3, AdobeRGB, ProPhotoRGB, ACEScg, Rec2020_HDR (PQ, PNG_16/TIFF_16 only). Existing files are never overwritten.",
             "inputSchema": { "type": "object", "required": ["photo_ids", "destination_folder", "format"], "properties": {
                 "photo_ids": ids,
                 "destination_folder": { "type": "string" },
                 "format": { "type": "string", "enum": develop::EXPORT_FORMATS },
-                "color_space": { "type": "string", "enum": ["sRGB", "DisplayP3", "AdobeRGB", "Rec2020_HDR"] },
+                "color_space": { "type": "string", "enum": ["sRGB", "DisplayP3", "AdobeRGB", "ProPhotoRGB", "ACEScg", "Rec2020_HDR"] },
                 "quality": { "type": "integer", "minimum": 1, "maximum": 100, "default": 90 },
                 "attach_c2pa_credentials": { "type": "boolean", "default": false } } }
         },
         {
             "name": "photo_inspect",
-            "description": "Rendered preview (JPEG) of a photo with its current edits, plus telemetry: 256-bin RGB/luma histograms, clipping percentages, luma percentiles and dominant Oklch colours. Same data as the openlight://photo/{id}/preview and /telemetry resources.",
+            "description": "Rendered preview (JPEG) of a photo with its current edits, plus telemetry: 256-bin RGB/luma histograms, clipping percentages, luma percentiles and dominant Oklch colours. Same data as the optixel://photo/{id}/preview and /telemetry resources.",
             "inputSchema": { "type": "object", "required": ["photo_id"], "properties": {
                 "photo_id": { "type": "string" },
                 "max_edge": { "type": "integer", "enum": [512, 1024, 1536], "default": 1024 },
@@ -161,7 +162,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "auto_run",
-            "description": "Run one of OpenLight's auto functions on photos with its advanced settings (omitted settings keep the user's saved values): cull = Auto Catalog & Culling (stars, picks of each burst, rejects of blurred or badly exposed photos, labels, keywords); edit = auto non-destructive editing to a look profile; mask = AI masking (subject, sky, background, people selections); enhance = denoise and super resolution into a new master file; hdr = HDR Merge of exposure brackets into a new 32-bit float master; blur = find photos whose main subject is blurred; duplicates = find exact and similar duplicates. Returns a summary and a row per photo (or per duplicate group).",
+            "description": "Run one of Optixel's auto functions on photos with its advanced settings (omitted settings keep the user's saved values): cull = Auto Catalog & Culling (stars, picks of each burst, rejects of blurred or badly exposed photos, labels, keywords); edit = auto non-destructive editing to a look profile; mask = AI masking (subject, sky, background, people selections); enhance = denoise and super resolution into a new master file; hdr = HDR Merge of exposure brackets into a new 32-bit float master; blur = find photos whose main subject is blurred; duplicates = find exact and similar duplicates. Returns a summary and a row per photo (or per duplicate group).",
             "inputSchema": { "type": "object", "required": ["function", "photo_ids"], "properties": {
                 "function": { "type": "string", "enum": auto::FUNCTIONS },
                 "photo_ids": ids,
@@ -221,7 +222,7 @@ pub fn handle(core: &Arc<Core>, msg: &Value) -> Option<Value> {
         "initialize" => Ok(json!({
             "protocolVersion": params["protocolVersion"].as_str().unwrap_or("2025-06-18"),
             "capabilities": { "tools": {}, "resources": {} },
-            "serverInfo": { "name": "openlight-studio", "version": env!("CARGO_PKG_VERSION") },
+            "serverInfo": { "name": "optixel-studio", "version": env!("CARGO_PKG_VERSION") },
             "instructions": INSTRUCTIONS,
         })),
         "ping" => Ok(json!({})),
@@ -231,13 +232,13 @@ pub fn handle(core: &Arc<Core>, msg: &Value) -> Option<Value> {
             Ok(call_tool(core, name, params.get("arguments").unwrap_or(&json!({}))))
         }
         "resources/list" => Ok(json!({ "resources": [
-            { "uri": "openlight://catalog/summary", "name": "Catalog summary", "mimeType": "application/json" },
-            { "uri": "openlight://selection/active", "name": "Active selection", "mimeType": "application/json" },
+            { "uri": "optixel://catalog/summary", "name": "Catalog summary", "mimeType": "application/json" },
+            { "uri": "optixel://selection/active", "name": "Active selection", "mimeType": "application/json" },
         ] })),
         "resources/templates/list" => Ok(json!({ "resourceTemplates": [
-            { "uriTemplate": "openlight://photo/{id}/state", "name": "Edit graph", "mimeType": "application/json" },
-            { "uriTemplate": "openlight://photo/{id}/telemetry", "name": "Histogram telemetry", "mimeType": "application/json" },
-            { "uriTemplate": "openlight://photo/{id}/preview", "name": "Rendered preview (?max_edge=1024|2048&mask=<index>)", "mimeType": "image/jpeg" },
+            { "uriTemplate": "optixel://photo/{id}/state", "name": "Edit graph", "mimeType": "application/json" },
+            { "uriTemplate": "optixel://photo/{id}/telemetry", "name": "Histogram telemetry", "mimeType": "application/json" },
+            { "uriTemplate": "optixel://photo/{id}/preview", "name": "Rendered preview (?max_edge=1024|2048&mask=<index>)", "mimeType": "image/jpeg" },
         ] })),
         "resources/read" => {
             let uri = params["uri"].as_str().unwrap_or("");
@@ -284,12 +285,10 @@ fn call_tool(core: &Arc<Core>, name: &str, a: &Value) -> Value {
             if semantic.is_some() {
                 notes.push("semantic_query matched by keyword (no vision embedding model in this build)");
             }
-            if a.get("eyes_open_only").is_some() {
-                notes.push("eyes-open status needs a face model, which is not installed in this build; filter ignored");
-            }
+            let eyes_open_only = a["eyes_open_only"].as_bool().unwrap_or(false);
             let min_sharp = a["min_eye_sharpness"].as_f64();
             if min_sharp.is_some() {
-                notes.push("min_eye_sharpness uses the main subject's sharpness from the auto analysis (no face model); photos not analysed yet (auto_run blur or cull) are left out");
+                notes.push("min_eye_sharpness uses the main subject's sharpness from the auto analysis; photos not analysed yet (auto_run blur or cull) are left out");
             }
             let f = catalog::Filter {
                 min_rating: a["min_rating"].as_i64(),
@@ -304,15 +303,19 @@ fn call_tool(core: &Arc<Core>, name: &str, a: &Value) -> Value {
             let photos: Vec<Value> = photos
                 .iter()
                 .filter_map(|p| {
-                    let sharp = catalog::any_analysis(&db, &p.path).map(|m| m.subject_sharpness.round());
+                    let ana = catalog::any_analysis(&db, &p.path);
+                    let sharp = ana.as_ref().map(|m| m.subject_sharpness.round());
                     if min_sharp.is_some_and(|min| sharp.is_none_or(|s| (s as f64) < min)) {
+                        return None;
+                    }
+                    if eyes_open_only && ana.as_ref().is_some_and(|m| m.blink_detected) {
                         return None;
                     }
                     Some(json!({ "photo_id": p.id.to_string(), "filename": p.filename, "folder": p.folder, "virtual_copy": p.copy_name,
                         "rating": p.rating, "flag": catalog::flag_name(p.flag), "color_label": p.color_label,
                         "captured_at": p.captured_at, "camera": p.camera, "lens": p.lens, "iso": p.iso, "aperture": p.aperture,
                         "shutter": p.shutter, "focal_length": p.focal_length, "width": p.width, "height": p.height, "edited": p.edited,
-                        "subject_sharpness": sharp }))
+                        "subject_sharpness": sharp, "blink_detected": ana.as_ref().map(|m| m.blink_detected) }))
                 })
                 .collect();
             Ok(vec![text(json!({ "count": photos.len(), "photos": photos, "notes": notes }))])
@@ -463,7 +466,9 @@ fn call_tool(core: &Arc<Core>, name: &str, a: &Value) -> Value {
 }
 
 fn read_resource(core: &Arc<Core>, uri: &str) -> Result<Value, String> {
-    let rest = uri.strip_prefix("openlight://").ok_or_else(|| format!("unknown resource {uri}"))?;
+    let rest = uri.strip_prefix("optixel://")
+        .or_else(|| uri.strip_prefix("openlight://"))
+        .ok_or_else(|| format!("unknown resource {uri}"))?;
     let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
     let q = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(&format!("{k}=")).and_then(|v| v.parse::<u32>().ok()));
     let json_doc = |v: Value| json!({ "uri": uri, "mimeType": "application/json", "text": serde_json::to_string_pretty(&v).unwrap_or_default() });
@@ -612,8 +617,8 @@ pub fn run_stdio() {
         Some((r.status().as_u16(), r.body_mut().read_to_string().unwrap_or_default()))
     };
     let attached = settings.mcp_enabled && post(r#"{"jsonrpc":"2.0","id":0,"method":"ping"}"#).is_some_and(|(s, _)| s == 200);
-    let core = (!attached).then(|| Arc::new(Core::open(dir).expect("could not open the OpenLight catalog")));
-    eprintln!("openlight-studio MCP (stdio): {}", if attached { "attached to the running app" } else { "headless catalog" });
+    let core = (!attached).then(|| Arc::new(Core::open(dir).expect("could not open the Optixel catalog")));
+    eprintln!("optixel-studio MCP (stdio): {}", if attached { "attached to the running app" } else { "headless catalog" });
     let mut out = std::io::stdout();
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };

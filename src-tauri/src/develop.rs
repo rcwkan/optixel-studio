@@ -54,6 +54,8 @@ pub struct Develop {
     pub filters: Filters,
     pub image_rotation: ImageRotation,
     pub crop: Crop,
+    /// RAW files only: how the sensor data is decoded.
+    pub raw: Raw,
     pub retouch: Vec<Heal>,
     #[serde(default)]
     pub ai_removals: Vec<AiRemoval>,
@@ -61,6 +63,26 @@ pub struct Develop {
     pub ai_denoise: AiDenoise,
     pub masks: Vec<Mask>,
     pub ai_provenance_log: Vec<Value>,
+}
+
+/// How a RAW file's sensor data is decoded. `engine` "" is the built-in decoder (PPG demosaic, highlights
+/// rolled off into white, colours inside sRGB), which hands a file to LibRaw only when it cannot read it.
+/// "libraw" decodes with LibRaw: the camera's colours go straight into Rec.2020, and
+/// - `demosaic`: "" (ahd) | linear | vng | ppg | ahd | dcb | dht | aahd; on X-Trans sensors ahd and up run
+///   3-pass Markesteijn, the others 1-pass. The proxy is binned to half size instead, so the choice shows
+///   at 100 % zoom and in exports.
+/// - `highlights`: "" (clip) | clip | unclip (as recorded: the channels clip at different levels, so blown
+///   areas go pink) | blend (blown channels follow the unclipped ones) | rebuild (from their surroundings).
+///   All but clip keep the highlights above white, for Exposure and Highlights to bring back.
+/// ponytail: AI denoise and AI removals made before these change keep the old decode: run them again.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[serde(default)]
+pub struct Raw {
+    pub engine: String,
+    pub demosaic: String,
+    pub highlights: String,
+    pub black_offset: i32,
+    pub raw_denoise: i32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -847,6 +869,17 @@ impl Develop {
         cl(&mut c.h, 0.02, 1.0);
         cl(&mut c.x, 0.0, 1.0 - c.w);
         cl(&mut c.y, 0.0, 1.0 - c.h);
+        if self.raw.engine != "" && self.raw.engine != "libraw" {
+            self.raw.engine.clear();
+        }
+        if !self.raw.demosaic.is_empty() && !crate::libraw::DEMOSAIC.iter().any(|(n, _)| *n == self.raw.demosaic) {
+            self.raw.demosaic.clear();
+        }
+        if !self.raw.highlights.is_empty() && !crate::libraw::HIGHLIGHTS.iter().any(|(n, _)| *n == self.raw.highlights) {
+            self.raw.highlights.clear();
+        }
+        self.raw.black_offset = self.raw.black_offset.clamp(-512, 512);
+        self.raw.raw_denoise = self.raw.raw_denoise.clamp(0, 100);
         let outline = |pts: &mut Vec<[f32; 2]>| {
             pts.truncate(MAX_POINTS);
             for v in pts.iter_mut().flatten() {
@@ -925,6 +958,7 @@ impl Develop {
                 t.lens = Lens::default();
                 t.transform = Transform::default();
                 t.image_rotation = ImageRotation::default();
+                t.raw = Raw::default();
                 t.calibration = Calibration::default();
                 t.retouch.clear();
                 t.masks.clear();
@@ -1021,8 +1055,8 @@ pub fn mask_from_ops(name: &str, ops: &Value, adjustments: &Value) -> Result<(Ma
 
 pub(crate) const M709_2020: M3 = [[0.6274039, 0.3292830, 0.0433131], [0.0690973, 0.9195404, 0.0113623], [0.0163914, 0.0880133, 0.8955953]];
 pub(crate) const M2020_709: M3 = [[1.6604910, -0.5876411, -0.0728499], [-0.1245505, 1.1328999, -0.0083494], [-0.0181508, -0.1005789, 1.1187297]];
-const M2020_P3: M3 = [[1.3435783, -0.2821797, -0.0613986], [-0.0652975, 1.0757879, -0.0104905], [0.0028218, -0.0195985, 1.0167767]];
-const M2020_ADOBE: M3 = [[1.1519784, -0.0975031, -0.0544753], [-0.1245505, 1.1328999, -0.0083494], [-0.0225304, -0.0498065, 1.0723369]];
+pub(crate) const M2020_P3: M3 = [[1.3435783, -0.2821797, -0.0613986], [-0.0652975, 1.0757879, -0.0104905], [0.0028218, -0.0195985, 1.0167767]];
+pub(crate) const M2020_ADOBE: M3 = [[1.1519784, -0.0975031, -0.0544753], [-0.1245505, 1.1328999, -0.0083494], [-0.0225304, -0.0498065, 1.0723369]];
 const MXYZ_2020: M3 = [[1.7166513, -0.3556708, -0.2533663], [-0.6666843, 1.6164812, 0.0157686], [0.0176399, -0.0427706, 0.9421031]];
 const M2020_LMS: M3 = [[0.6166884, 0.3601591, 0.0230433], [0.2651402, 0.6358565, 0.0990302], [0.1001506, 0.2040043, 0.6963247]];
 const MLMS_2020: M3 = [[2.1401404, -1.2463560, 0.1064317], [-0.8848325, 2.1631727, -0.2783616], [-0.0485791, -0.4544909, 1.5023563]];
@@ -1135,7 +1169,7 @@ pub const RAW_EXTS: &[&str] = &[
     "dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "pef", "srw", "3fr", "iiq",
     "erf", "mef", "mos", "kdc", "dcr", "rwl",
 ];
-pub const IMG_EXTS: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff", "webp"];
+pub const IMG_EXTS: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff", "webp", "jxl", "heic", "heif", "avif"];
 
 fn ext(path: &Path) -> String {
     path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase()
@@ -1163,9 +1197,27 @@ pub fn displayable(img: DynamicImage) -> DynamicImage {
     DynamicImage::ImageRgb8(ImageBuffer::from_raw(buf.width(), buf.height(), rgb).expect("rgb8 buffer"))
 }
 
+/// Where a decoded file's pixel values are: already in the working space (LibRaw), in the colour space
+/// of its embedded ICC profile, or untagged (sRGB, or linear Rec.709 for a float file).
+enum Space {
+    Working,
+    Icc(Vec<u8>),
+    Untagged,
+}
+
 /// Decode any supported file into the working space, optionally downscaled.
 pub fn load(path: &Path, max_edge: Option<u32>) -> Result<Img, String> {
-    let img = if is_raw(path) { decode_raw(path)? } else { decode_std(path)? };
+    load_with(path, max_edge, &Raw::default())
+}
+
+/// `load`, decoding a RAW file as `raw` says.
+pub fn load_with(path: &Path, max_edge: Option<u32>, raw: &Raw) -> Result<Img, String> {
+    let (img, space) = if is_raw(path) {
+        decode_raw(path, raw, max_edge)?
+    } else {
+        let (img, icc) = decode_tagged(path)?;
+        (img, icc.map_or(Space::Untagged, Space::Icc))
+    };
     let linear = is_float(&img);
     let img = match max_edge {
         Some(m) if img.width().max(img.height()) > m => img.resize(m, m, FilterType::Triangle),
@@ -1173,28 +1225,107 @@ pub fn load(path: &Path, max_edge: Option<u32>) -> Result<Img, String> {
     };
     let buf = img.to_rgb32f();
     let (w, h) = (buf.width() as usize, buf.height() as usize);
-    let px = buf
-        .as_raw()
-        .par_chunks_exact(3)
-        .map(|c| if linear { mul(&M709_2020, [c[0], c[1], c[2]]) } else { srgb_to_working([c[0], c[1], c[2]]) })
-        .collect();
+    let assumed = |p: Px| if linear { mul(&M709_2020, p) } else { srgb_to_working(p) };
+    let mut px: Vec<Px> = buf.as_raw().par_chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+    match space {
+        Space::Working => {}
+        // a profile lcms2 cannot use for RGB (grey, CMYK, damaged) is ignored, as every profile used to be
+        Space::Icc(icc) if crate::icc::to_working(&icc, &mut px).is_ok() => {}
+        _ => px.par_iter_mut().for_each(|p| *p = assumed(*p)),
+    }
     Ok(Img { w, h, px })
 }
 
-/// JPEG/PNG/TIFF/WebP with EXIF orientation applied.
-/// ponytail: embedded ICC profiles are ignored (files are read as sRGB); add moxcms
-/// transforms when wide-gamut JPEGs (e.g. Display P3 phone shots) need to be exact.
-pub fn decode_std(path: &Path) -> Result<DynamicImage, String> {
+/// JPEG/PNG/TIFF/WebP/JPEG XL/HEIC/AVIF with EXIF orientation applied, and its embedded ICC profile if it has one.
+fn decode_tagged(path: &Path) -> Result<(DynamicImage, Option<Vec<u8>>), String> {
+    let e = ext(path);
+    if e == "jxl" {
+        return decode_jxl(path).map(|img| (img, None));
+    }
+    if matches!(e.as_str(), "heic" | "heif" | "avif") {
+        let bytes = fs::read(path).map_err(es)?;
+        if let Ok((w, h, rgb, icc)) = crate::libraw::decode_heif(&bytes, None)
+            && let Some(buf) = ImageBuffer::from_raw(w, h, rgb)
+        {
+            return Ok((DynamicImage::ImageRgb8(buf), icc));
+        }
+    }
     let mut dec =
         image::ImageReader::open(path).map_err(es)?.with_guessed_format().map_err(es)?.into_decoder().map_err(es)?;
     let o = dec.orientation().unwrap_or(Orientation::NoTransforms);
+    let icc = dec.icc_profile().ok().flatten();
     let mut img = DynamicImage::from_decoder(dec).map_err(es)?;
     img.apply_orientation(o);
+    Ok((img, icc))
+}
+
+/// A standard image file as the screen shows it: 8-bit files in a wider space than sRGB (Display P3 phone
+/// shots, Adobe RGB camera JPEGs) are converted to sRGB. For thumbnails and analysis; `load` keeps the gamut.
+/// ponytail: only an embedded profile counts; a camera JPEG marked Adobe RGB by EXIF alone reads as sRGB.
+pub fn decode_std(path: &Path) -> Result<DynamicImage, String> {
+    let (mut img, icc) = decode_tagged(path)?;
+    if let (Some(icc), DynamicImage::ImageRgb8(buf)) = (icc, &mut img) {
+        let _ = crate::icc::to_srgb8(&icc, buf);
+    }
     Ok(img)
 }
 
+/// JPEG XL (jxl-oxide, with lcms2 for files that carry an ICC profile) straight to linear Rec.2020 in a
+/// float image the caller treats as Rec.709: hence the matrix back. HDR (PQ, HLG) files keep their
+/// highlights above 1.0.
+/// ponytail: import only; exporting JPEG XL needs libjxl (C++, CMake), not worth it until someone asks.
+fn decode_jxl(path: &Path) -> Result<DynamicImage, String> {
+    use jxl_oxide::{EnumColourEncoding, JxlImage, RenderingIntent, color};
+    let mut jxl = JxlImage::builder().open(path).map_err(es)?;
+    jxl.set_cms(jxl_oxide::Lcms2);
+    jxl.request_color_encoding(EnumColourEncoding {
+        colour_space: color::ColourSpace::Rgb,
+        white_point: color::WhitePoint::D65,
+        primaries: color::Primaries::Bt2100,
+        tf: color::TransferFunction::Linear,
+        rendering_intent: RenderingIntent::Relative,
+    });
+    // linear output puts 1.0 at the file's intensity target; ours is SDR white, 203 nits (as `pq`)
+    let nits = jxl.image_header().metadata.tone_mapping.intensity_target;
+    let k = if jxl.hdr_type().is_some() { nits / 203.0 } else { 1.0 };
+    let fb = jxl.render_frame(0).map_err(es)?.image_all_channels();
+    let n = fb.channels();
+    if n == 0 || n == 2 || fb.width() == 0 {
+        return Err("unsupported JPEG XL layout".into());
+    }
+    // grey: one channel (+ extras); colour: three (+ alpha and extras)
+    let data: Vec<f32> = fb.buf().par_chunks_exact(n).flat_map_iter(|c| mul(&M2020_709, if n < 3 { [c[0]; 3] } else { [c[0], c[1], c[2]] }.map(|v| v * k))).collect();
+    ImageBuffer::from_raw(fb.width() as u32, fb.height() as u32, data).map(DynamicImage::ImageRgb32F).ok_or_else(|| "bad JPEG XL buffer".into())
+}
+
+/// A RAW file as a linear float image, in the working space (LibRaw) or in Rec.709 (the built-in decoder).
+fn decode_raw(path: &Path, raw: &Raw, max_edge: Option<u32>) -> Result<(DynamicImage, Space), String> {
+    let libraw = || -> Result<(DynamicImage, Space), String> {
+        let (w, h, data) = crate::libraw::develop_ex(
+            &fs::read(path).map_err(es)?,
+            &raw.demosaic,
+            &raw.highlights,
+            raw.black_offset,
+            raw.raw_denoise as f32 / 100.0,
+            max_edge,
+        )?;
+        let buf = ImageBuffer::from_raw(w as u32, h as u32, data).ok_or_else(|| "bad RAW buffer".to_string())?;
+        Ok((DynamicImage::ImageRgb32F(buf), Space::Working))
+    };
+    if raw.engine == "libraw"
+        || !raw.demosaic.is_empty()
+        || !raw.highlights.is_empty()
+        || raw.black_offset != 0
+        || raw.raw_denoise > 0
+    {
+        return libraw();
+    }
+    // a camera the built-in decoder does not know may be one LibRaw does
+    decode_rawler(path).map(|img| (img, Space::Untagged)).or_else(|e| libraw().map_err(|l| format!("{e} ({l})")))
+}
+
 /// Full RAW develop via rawler (demosaic, as-shot WB, camera matrix) -> linear sRGB.
-fn decode_raw(path: &Path) -> Result<DynamicImage, String> {
+fn decode_rawler(path: &Path) -> Result<DynamicImage, String> {
     use rawler::imgop::develop::{Intermediate, ProcessingStep::*, RawDevelop};
     let path = path.to_path_buf();
     // rawler still has todo!()/panic!() paths for exotic sensors
@@ -1470,6 +1601,10 @@ pub fn render(src: &Img, d: &Develop, o: &Opts) -> Img {
 /// Stages 1–7 (everything before geometry), plus each mask's coverage (None for a disabled
 /// mask that is not the overlay).
 fn tones(src: &[Px], w: usize, h: usize, d: &Develop, overlay: Option<usize>, ai_cache_dir: Option<&Path>) -> (Vec<Px>, Vec<Option<Vec<f32>>>) {
+    tones_impl(src, w, h, d, overlay, ai_cache_dir, true)
+}
+
+fn tones_impl(src: &[Px], w: usize, h: usize, d: &Develop, overlay: Option<usize>, ai_cache_dir: Option<&Path>, allow_gpu: bool) -> (Vec<Px>, Vec<Option<Vec<f32>>>) {
     // 1. white balance + exposure
     let wb = wb_gains(d.white_balance.temperature_k, d.white_balance.tint);
     let g = wb.map(|v| v * d.basic_tone.exposure.exp2());
@@ -1492,7 +1627,7 @@ fn tones(src: &[Px], w: usize, h: usize, d: &Develop, overlay: Option<usize>, ai
     let mut pro_gpu = false;
     // ponytail: light edits (tone/curves only) are faster on the CPU than the transfer to the GPU
     let heavy = color.active || (pro.active && no_detail);
-    let on_gpu = if simple && heavy {
+    let on_gpu = if allow_gpu && simple && heavy {
         color.gpu_params().and_then(|cp| {
             pro_gpu = pro.active && no_detail;
             let mut params = cp;
@@ -4536,38 +4671,45 @@ pub fn export_linear(img: &Img, out: &Path) -> Result<(), String> {
 
 /// Encode with an embedded ICC profile and, when the capture time is known, an EXIF
 /// DateTimeOriginal (JPEG, PNG, AVIF). Rec2020_HDR writes PQ-encoded 16-bit files.
+/// Also supports ProPhotoRGB and ACEScg wide-gamut exports via LittleCMS2.
 pub fn export(img: &Img, out: &Path, format: &str, color_space: &str, quality: u8, taken: Option<&str>) -> Result<(), String> {
     use image::codecs::{avif::AvifEncoder, jpeg::JpegEncoder, png::PngEncoder, tiff::TiffEncoder};
     use moxcms::ColorProfile;
     let hdr = color_space == "Rec2020_HDR";
-    let (m, profile) = match color_space {
-        "sRGB" | "" => (M2020_709, ColorProfile::new_srgb()),
-        "DisplayP3" => (M2020_P3, ColorProfile::new_display_p3()),
-        "AdobeRGB" => (M2020_ADOBE, ColorProfile::new_adobe_rgb()),
-        "Rec2020_HDR" => (IDENT, ColorProfile::new_bt2020_pq()),
-        other => return Err(format!("unsupported color_space '{other}'")),
-    };
     if hdr && !matches!(format, "PNG_16" | "TIFF_16") {
         return Err("Rec2020_HDR export needs PNG_16 or TIFF_16".into());
     }
-    let adobe = color_space == "AdobeRGB";
-    let enc: Vec<f32> = img
-        .px
-        .par_iter()
-        .flat_map_iter(|p| {
-            mul(&m, *p).map(|l| {
-                if hdr {
-                    pq(l)
-                } else if adobe {
-                    l.clamp(0.0, 1.0).powf(1.0 / 2.199_219)
-                } else {
-                    srgb_oetf(l.clamp(0.0, 1.0))
-                }
+    let (enc, icc) = if matches!(color_space, "ProPhotoRGB" | "ACEScg") {
+        let (px, icc_bytes) = crate::icc::from_working(&img.px, color_space, None)?;
+        let flat: Vec<f32> = px.into_iter().flat_map(|p| p.map(|v| v.clamp(0.0, 1.0))).collect();
+        (flat, Some(icc_bytes))
+    } else {
+        let (m, profile) = match color_space {
+            "sRGB" | "" => (M2020_709, ColorProfile::new_srgb()),
+            "DisplayP3" => (M2020_P3, ColorProfile::new_display_p3()),
+            "AdobeRGB" => (M2020_ADOBE, ColorProfile::new_adobe_rgb()),
+            "Rec2020_HDR" => (IDENT, ColorProfile::new_bt2020_pq()),
+            other => return Err(format!("unsupported color_space '{other}'")),
+        };
+        let adobe = color_space == "AdobeRGB";
+        let flat: Vec<f32> = img
+            .px
+            .par_iter()
+            .flat_map_iter(|p| {
+                mul(&m, *p).map(|l| {
+                    if hdr {
+                        pq(l)
+                    } else if adobe {
+                        l.clamp(0.0, 1.0).powf(1.0 / 2.199_219)
+                    } else {
+                        srgb_oetf(l.clamp(0.0, 1.0))
+                    }
+                })
             })
-        })
-        .collect();
+            .collect();
+        (flat, profile.encode().ok())
+    };
     let (w, h) = (img.w as u32, img.h as u32);
-    let icc = profile.encode().ok();
     let exif = taken.and_then(exif_taken);
     let file = std::io::BufWriter::new(std::fs::File::create(out).map_err(es)?);
     let to8 = || ImageBuffer::from_raw(w, h, enc.iter().map(|v| (v * 255.0 + 0.5) as u8).collect()).map(DynamicImage::ImageRgb8);
@@ -5202,13 +5344,11 @@ mod gpu_tests {
         ];
         for (name, v) in cases {
             let d: Develop = serde_json::from_value(v).unwrap();
-            crate::gpu::set_enabled(false);
             let t0 = std::time::Instant::now();
-            let (cpu, _) = tones(&src, w, h, &d, None, None);
+            let (cpu, _) = tones_impl(&src, w, h, &d, None, None, false);
             let t_cpu = t0.elapsed();
-            crate::gpu::set_enabled(true);
             let t0 = std::time::Instant::now();
-            let (gpu, _) = tones(&src, w, h, &d, None, None);
+            let (gpu, _) = tones_impl(&src, w, h, &d, None, None, true);
             eprintln!("  cpu {t_cpu:?}, gpu {:?}, bit-identical px: {}", t0.elapsed(), cpu.iter().zip(&gpu).filter(|(a, b)| a == b).count());
             let bad = cpu.iter().zip(&gpu).filter(|(a, b)| (0..3).any(|c| !((a[c] - b[c]).abs() <= 2e-3 * (1.0 + a[c].abs())))).count();
             let frac = bad as f64 / cpu.len() as f64;
@@ -5221,10 +5361,10 @@ mod gpu_tests {
 
 #[cfg(test)]
 mod raw_size_tests {
-    /// Set OPENLIGHT_TEST_RAW to a RAW file to check the header size (skipped otherwise).
+    /// Set OPTIXEL_TEST_RAW (or OPENLIGHT_TEST_RAW) to a RAW file to check the header size (skipped otherwise).
     #[test]
     fn raw_size_is_full_sensor() {
-        let Some(p) = std::env::var_os("OPENLIGHT_TEST_RAW") else { return };
+        let Some(p) = std::env::var_os("OPTIXEL_TEST_RAW").or_else(|| std::env::var_os("OPENLIGHT_TEST_RAW")) else { return };
         let (w, h) = super::raw_size(std::path::Path::new(&p)).expect("raw size");
         eprintln!("raw_size = {w}x{h} ({:.1} MP)", (w * h) as f64 / 1e6);
         let raw = rawler::decode_file(std::path::Path::new(&p)).unwrap();

@@ -1,14 +1,14 @@
 # Chapter 9: AI-Assisted Pair Programming with Google Antigravity & AI Agents
 
-This chapter guides developers and AI agents on using **Google Antigravity (AGY)** and autonomous coding tools to develop, debug, and test OpenLight Studio.
+This chapter guides developers and AI agents on using **Google Antigravity (AGY)** and autonomous coding tools to develop, debug, and test Optixel Studio.
 
 ---
 
-## 1. Antigravity & OpenLight Studio Synergy
+## 1. Antigravity & Optixel Studio Synergy
 
-OpenLight Studio is architected from day one to be developed with and controlled by AI agents. The repository contains built-in configurations for Google Antigravity:
+Optixel Studio is architected from day one to be developed with and controlled by AI agents. The repository contains built-in configurations for Google Antigravity:
 
-* **In-App Provider**: OpenLight Studio ships with a pre-configured CLI provider for Antigravity in [`src-tauri/src/ai.rs`](../src-tauri/src/ai.rs):
+* **In-App Provider**: Optixel Studio ships with a pre-configured CLI provider for Antigravity in [`src-tauri/src/ai.rs`](../src-tauri/src/ai.rs):
   ```json
   {
     "id": "cli:antigravity",
@@ -24,7 +24,7 @@ OpenLight Studio is architected from day one to be developed with and controlled
 ## 2. Using Antigravity Capabilities During Development
 
 ### 2.1 Recommended Slash Commands
-When pair programming on complex OpenLight features in Antigravity, recommend or trigger these slash commands:
+When pair programming on complex Optixel features in Antigravity, recommend or trigger these slash commands:
 
 * **/plan**: For architecting complex features (e.g. adding new WebGPU compute shaders, integrating ONNX neural models, or extending SQLite schema migrations) before writing code.
 * **/goal**: For long-running, multi-file refactoring or test suites that should run autonomously until all tests pass.
@@ -37,16 +37,16 @@ When pair programming on complex OpenLight features in Antigravity, recommend or
 
 ---
 
-## 3. Testing OpenLight MCP Tools Directly Inside Antigravity
+## 3. Testing Optixel MCP Tools Directly Inside Antigravity
 
-Because OpenLight Studio exposes an MCP server on loopback (`http://127.0.0.1:41920/mcp`), an agent running inside Antigravity can interact with a live running instance of OpenLight Studio:
+Because Optixel Studio exposes an MCP server on loopback (`http://127.0.0.1:41920/mcp`), an agent running inside Antigravity can interact with a live running instance of Optixel Studio:
 
 ```mermaid
 sequenceDiagram
     participant Dev as Developer / User
     participant AGY as Antigravity Agent
-    participant MCP as OpenLight MCP Server (41920)
-    participant Core as OpenLight Rust Core
+    participant MCP as Optixel MCP Server (41920)
+    participant Core as Optixel Rust Core
 
     Dev->>AGY: "Find underexposed photos and lift their shadows"
     AGY->>MCP: call_tool("catalog_query", { "min_rating": 3 })

@@ -187,7 +187,7 @@ export const THEMES: ThemeInfo[] = [
 
 export function getStoredTheme(): Theme {
   try {
-    const t = localStorage.getItem("openlight-theme") as Theme | null;
+    const t = (localStorage.getItem("optixel-theme") || localStorage.getItem("openlight-theme")) as Theme | null;
     if (
       t &&
       [
@@ -228,7 +228,7 @@ export function isLightTheme(theme: Theme): boolean {
 
 export function applyTheme(theme: Theme) {
   try {
-    localStorage.setItem("openlight-theme", theme);
+    localStorage.setItem("optixel-theme", theme);
   } catch (_) {}
 
   const root = document.documentElement;

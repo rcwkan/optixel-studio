@@ -270,5 +270,5 @@ impl Sd {
 
 pub fn env() -> Result<&'static Environment, String> {
     static ENV: OnceLock<Result<Environment, String>> = OnceLock::new();
-    ENV.get_or_init(|| ort::init().with_name("openlight-sd").build().map_err(|e| e.to_string())).as_ref().map_err(|e| e.clone())
+    ENV.get_or_init(|| ort::init().with_name("optixel-sd").build().map_err(|e| e.to_string())).as_ref().map_err(|e| e.clone())
 }

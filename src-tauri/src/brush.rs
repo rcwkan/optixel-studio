@@ -66,10 +66,13 @@ pub fn snap(img: &Img, strokes: &[Stroke]) -> Result<Vec<f32>, String> {
 mod tests {
     use super::*;
 
-    /// OPENLIGHT_TEST_RAW=<file> OPENLIGHT_TEST_OUT=<png> OPENLIGHT_TEST_STROKE=x1,y1,x2,y2,radius (fractions): snaps a stroke.
+    /// OPTIXEL_TEST_RAW=<file> OPTIXEL_TEST_OUT=<png> OPTIXEL_TEST_STROKE=x1,y1,x2,y2,radius (fractions): snaps a stroke.
     #[test]
     fn snap_real_photo() {
-        let (Some(file), Some(out), Ok(st)) = (std::env::var_os("OPENLIGHT_TEST_RAW"), std::env::var_os("OPENLIGHT_TEST_OUT"), std::env::var("OPENLIGHT_TEST_STROKE")) else { return };
+        let file = std::env::var_os("OPTIXEL_TEST_RAW").or_else(|| std::env::var_os("OPENLIGHT_TEST_RAW"));
+        let out = std::env::var_os("OPTIXEL_TEST_OUT").or_else(|| std::env::var_os("OPENLIGHT_TEST_OUT"));
+        let stroke = std::env::var("OPTIXEL_TEST_STROKE").or_else(|_| std::env::var("OPENLIGHT_TEST_STROKE"));
+        let (Some(file), Some(out), Ok(st)) = (file, out, stroke) else { return };
         let v: Vec<f32> = st.split(',').map(|s| s.parse().unwrap()).collect();
         let img = develop::load(std::path::Path::new(&file), Some(1600)).unwrap();
         let (w, h) = (img.w, img.h);

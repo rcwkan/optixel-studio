@@ -1,5 +1,6 @@
-import { Fragment, ReactNode } from "react";
-import { Develop as Dev, Proof, setPath } from "./api";
+import { open } from "@tauri-apps/plugin-dialog";
+import { Fragment, ReactNode, useEffect, useState } from "react";
+import { api, Develop as Dev, IccProfileEntry, Proof, RawInfo, setPath } from "./api";
 import { Btn, Panel, Seg, Slider } from "./controls";
 
 type SliderFor = (label: string, path: (string | number)[], min: number, max: number, extra?: Partial<Parameters<typeof Slider>[0]>) => ReactNode;
@@ -10,12 +11,6 @@ const UPRIGHT: [string, string, string][] = [
   ["level", "Level", "Level the horizon only"],
   ["vertical", "Vertical", "Level and make vertical lines parallel"],
   ["full", "Full", "Level, vertical and horizontal perspective"],
-];
-const GAMUTS: [string, string][] = [
-  ["", "Off"],
-  ["sRGB", "sRGB"],
-  ["DisplayP3", "P3"],
-  ["AdobeRGB", "Adobe RGB"],
 ];
 const sub = "mb-0.5 mt-2.5 flex items-center justify-between text-[10px] uppercase tracking-wider text-neutral-500";
 const hint = "mt-1 text-[10px] text-neutral-500";
@@ -168,14 +163,315 @@ export function SpotPanel(p: WholeProps & { tool: string; setTool: (t: "none" | 
   );
 }
 
-/** view-only warnings: nothing here changes the photo */
+/** view-only warnings & LittleCMS2 interactive printer/display soft-proofing */
 export function ProofPanel(p: { proof: Proof; setProof: (p: Proof) => void }) {
+  const [profiles, setProfiles] = useState<IccProfileEntry[]>([]);
+  const [loadingIcc, setLoadingIcc] = useState(false);
+
+  useEffect(() => {
+    api.iccProfiles().then(setProfiles).catch(() => {});
+  }, []);
+
+  const handleImportIcc = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        title: "Load Custom Display / Printer ICC Profile",
+        filters: [{ name: "ICC Color Profile", extensions: ["icc", "icm", "ICC", "ICM"] }],
+      });
+      if (typeof selected === "string") {
+        setLoadingIcc(true);
+        const entry = await api.iccImportProfile(selected);
+        const list = await api.iccProfiles();
+        setProfiles(list);
+        p.setProof({
+          ...p.proof,
+          gamut: entry.id,
+          intent: p.proof.intent ?? "perceptual",
+          bpc: p.proof.bpc ?? true,
+          simulate_paper: p.proof.simulate_paper ?? true,
+          gamut_warn: p.proof.gamut_warn ?? true,
+        });
+      }
+    } catch (e) {
+      console.warn("ICC import error:", e);
+    } finally {
+      setLoadingIcc(false);
+    }
+  };
+
+  const activeProfile = profiles.find((pr) => pr.id === p.proof.gamut);
+
   return (
-    <Panel title="Soft proofing" open={false}>
-      <div className="mb-1 text-[10px] text-neutral-500">Gamut warning</div>
-      <Seg options={GAMUTS} value={p.proof.gamut ?? ""} onChange={(g) => p.setProof({ ...p.proof, gamut: g || null })} />
-      {check("Clipping warning (J)", p.proof.clipping, (v) => p.setProof({ ...p.proof, clipping: v }))}
-      <p className={hint}>Violet: colours the destination can't show. Red: clipped highlights; blue: crushed shadows.</p>
+    <Panel title="Studio Soft-Proofing (LittleCMS2)" open={false}>
+      <div className="mb-1 flex items-center justify-between text-[10px] text-neutral-400">
+        <span>Target Display / Printer Profile</span>
+        <button
+          type="button"
+          onClick={handleImportIcc}
+          disabled={loadingIcc}
+          className="text-sky-400 hover:text-sky-300 font-medium cursor-pointer"
+          title="Import custom .icc or .icm paper/printer/monitor profile"
+        >
+          {loadingIcc ? "Loading…" : "＋ Load .ICC…"}
+        </button>
+      </div>
+      <select
+        className="mb-2 w-full rounded bg-neutral-800 px-2 py-1 text-[11px] text-neutral-100 outline-none border border-neutral-700/70"
+        value={p.proof.gamut ?? ""}
+        onChange={(e) => {
+          const g = e.target.value || null;
+          p.setProof({
+            ...p.proof,
+            gamut: g,
+            intent: p.proof.intent ?? "perceptual",
+            bpc: p.proof.bpc ?? true,
+            simulate_paper: p.proof.simulate_paper ?? (g === "FineArtMatte" || g === "BarytaGloss"),
+            gamut_warn: p.proof.gamut_warn ?? true,
+          });
+        }}
+      >
+        <option value="">Off (Working Rec.2020 → Display)</option>
+        <optgroup label="Wide-Gamut & Standard Spaces">
+          <option value="sRGB">sRGB IEC61966-2.1</option>
+          <option value="DisplayP3">Apple XDR / Display P3</option>
+          <option value="AdobeRGB">Adobe RGB (1998)</option>
+          <option value="ProPhotoRGB">ProPhoto RGB (ROMM D50 32-bit)</option>
+          <option value="ACEScg">ACEScg (Linear AP1 D60 32-bit)</option>
+        </optgroup>
+        <optgroup label="Simulated Fine-Art Papers">
+          <option value="FineArtMatte">Hahnemühle FineArt Matte (Warm Rag)</option>
+          <option value="BarytaGloss">FineArt Baryta Photo Gloss</option>
+        </optgroup>
+        {profiles.some((pr) => pr.kind === "custom") && (
+          <optgroup label="Custom Imported .ICC Profiles">
+            {profiles
+              .filter((pr) => pr.kind === "custom")
+              .map((pr) => (
+                <option key={pr.id} value={pr.id}>
+                  {pr.label}
+                </option>
+              ))}
+          </optgroup>
+        )}
+      </select>
+
+      {activeProfile && (
+        <p className="mb-2 rounded bg-neutral-950/70 px-2 py-1 text-[10px] text-neutral-400 border border-neutral-800">
+          {activeProfile.description}
+        </p>
+      )}
+
+      {p.proof.gamut && (
+        <>
+          <div className="mb-1 text-[10px] text-neutral-500">Rendering Intent</div>
+          <Seg
+            options={[
+              ["perceptual", "Perceptual"],
+              ["relative", "Relative"],
+              ["saturation", "Sat"],
+              ["absolute", "Absolute"],
+            ]}
+            value={p.proof.intent ?? "perceptual"}
+            onChange={(intent) => p.setProof({ ...p.proof, intent })}
+          />
+          {check(
+            "Ink Black-Point Compensation (BPC)",
+            p.proof.bpc ?? true,
+            (bpc) => p.setProof({ ...p.proof, bpc }),
+            "Map working space black to printer/paper ink Dmax via LittleCMS2",
+          )}
+          {check(
+            "Simulate Paper Tint & Ink Dynamic Range",
+            p.proof.simulate_paper ?? false,
+            (simulate_paper) => p.setProof({ ...p.proof, simulate_paper }),
+            "Preview compressed paper contrast and warm cotton rag white point on screen",
+          )}
+          {check(
+            "Neon Out-of-Gamut Overlay Warning",
+            p.proof.gamut_warn ?? true,
+            (gamut_warn) => p.setProof({ ...p.proof, gamut_warn }),
+            "Highlight unprintable out-of-gamut pixels in neon magenta",
+          )}
+        </>
+      )}
+
+      {check("Highlight / Shadow Clipping Warning (J)", p.proof.clipping, (v) => p.setProof({ ...p.proof, clipping: v }))}
+      <p className={hint}>Neon magenta: colours outside target gamut. Red: clipped highlights; blue: crushed shadows.</p>
+    </Panel>
+  );
+}
+
+const DEMOSAIC_ALGOS: [string, string][] = [
+  ["rcd", "RCD — Ratio Corrected (General Sharpness)"],
+  ["amaze", "AMaZE — Low-ISO Maze Artifact Suppression"],
+  ["lmmse", "LMMSE — High-ISO Astro / Night Photography"],
+  ["ahd", "AHD — Adaptive Homogeneity-Directed"],
+  ["dcb", "DCB — Detail-Preserving Interpolation"],
+  ["dht", "DHT — Directional Homogeneity"],
+  ["aahd", "AAHD — Enhanced Adaptive AHD"],
+  ["ppg", "PPG — Patterned Pixel Grouping"],
+  ["vng", "VNG — Variable Number of Gradients"],
+  ["linear", "Bilinear — Fast Linear"],
+];
+
+const HIGHLIGHT_MODES: [string, string][] = [
+  ["clip", "Clip — Standard White Clipping"],
+  ["unclip", "Unclip — Raw Unclipped Channels"],
+  ["blend", "Blend — Multi-Channel Highlight Blend"],
+  ["rebuild", "Rebuild — Multi-Channel Highlight Recovery"],
+];
+
+/** Camera RAW Engine (LibRaw C++), Multi-Algorithm Demosaicing (RCD / AMaZE / LMMSE),
+ *  Sensor Optical Black-Point Calibration, Highlight Reconstruction & MakerNotes Telemetry. */
+export function RawEnginePanel(
+  p: WholeProps & {
+    rawInfo: RawInfo | null;
+    showAfOverlay: boolean;
+    setShowAfOverlay: (v: boolean) => void;
+  },
+) {
+  const { dev, change } = p;
+  const raw = dev.raw ?? { engine: "", demosaic: "", highlights: "", black_offset: 0, raw_denoise: 0 };
+  const setRaw = (patch: Partial<typeof raw>, label: string) => {
+    const next = { ...raw, ...patch };
+    // Automatically enable LibRaw C++ engine when picking a pro demosaic, highlight mode, black offset, or linear denoise
+    if (
+      (patch.demosaic && patch.demosaic !== "") ||
+      (patch.highlights && patch.highlights !== "" && patch.highlights !== "clip") ||
+      (patch.black_offset != null && patch.black_offset !== 0) ||
+      (patch.raw_denoise != null && patch.raw_denoise > 0)
+    ) {
+      if (!next.engine) next.engine = "libraw";
+    }
+    change({ ...dev, raw: next }, label, label);
+  };
+
+  const info = p.rawInfo;
+
+  return (
+    <Panel
+      title="Camera RAW & Optical Calibration"
+      open={false}
+      right={
+        <button
+          className="text-[10px] font-normal normal-case text-neutral-500 hover:text-neutral-200"
+          onClick={() =>
+            change(
+              { ...dev, raw: { engine: "", demosaic: "", highlights: "", black_offset: 0, raw_denoise: 0 } },
+              "Reset RAW engine",
+            )
+          }
+        >
+          reset
+        </button>
+      }
+    >
+      <div className="mb-1 text-[10px] text-neutral-400">RAW Pipeline Engine</div>
+      <Seg
+        options={[
+          ["", "Auto"],
+          ["libraw", "LibRaw C++ Studio"],
+        ]}
+        value={raw.engine || ""}
+        onChange={(engine) => setRaw({ engine }, "RAW engine")}
+      />
+
+      <div className={sub}>Demosaicing Algorithm</div>
+      <select
+        className="mb-1.5 w-full rounded bg-neutral-800 px-2 py-1 text-[11px] text-neutral-100 outline-none border border-neutral-700/70"
+        value={raw.demosaic || "rcd"}
+        onChange={(e) => setRaw({ demosaic: e.target.value, engine: "libraw" }, `Demosaic: ${e.target.value.toUpperCase()}`)}
+      >
+        {DEMOSAIC_ALGOS.map(([id, label]) => (
+          <option key={id} value={id}>
+            {label}
+          </option>
+        ))}
+      </select>
+
+      <div className={sub}>Highlight Reconstruction</div>
+      <select
+        className="mb-2 w-full rounded bg-neutral-800 px-2 py-1 text-[11px] text-neutral-100 outline-none border border-neutral-700/70"
+        value={raw.highlights || "clip"}
+        onChange={(e) => setRaw({ highlights: e.target.value, engine: "libraw" }, `Highlight recovery: ${e.target.value}`)}
+      >
+        {HIGHLIGHT_MODES.map(([id, label]) => (
+          <option key={id} value={id}>
+            {label}
+          </option>
+        ))}
+      </select>
+
+      <Slider
+        label="Optical Black Offset"
+        value={raw.black_offset ?? 0}
+        def={0}
+        min={-256}
+        max={256}
+        step={1}
+        onChange={(v) => setRaw({ black_offset: Math.round(v) }, "Optical black offset")}
+      />
+      <Slider
+        label="Linear Sensor Denoise"
+        value={raw.raw_denoise ?? 0}
+        def={0}
+        min={0}
+        max={100}
+        step={1}
+        onChange={(v) => setRaw({ raw_denoise: Math.round(v) }, "RAW sensor denoise")}
+      />
+
+      {info && (
+        <div className="mt-2.5 space-y-1.5 rounded border border-neutral-800 bg-neutral-950/80 p-2 text-[10px]">
+          <div className="flex items-center justify-between border-b border-neutral-800/80 pb-1 font-semibold text-neutral-300">
+            <span>Sensor & MakerNotes (C++)</span>
+            <span className="rounded bg-sky-950/80 px-1.5 py-0.2 font-mono text-[9px] text-sky-300 border border-sky-800/50">
+              {info.is_xtrans ? "X-Trans 6×6" : info.cfa_pattern || "Bayer"}
+            </span>
+          </div>
+          <div className="grid grid-cols-[92px_1fr] gap-x-2 gap-y-0.5 text-neutral-400">
+            <span>Optical Black</span>
+            <span className="font-mono text-neutral-200">{info.black_levels.join(" / ")} ADU</span>
+            <span>White Level</span>
+            <span className="font-mono text-neutral-200">{info.white_level} ADU</span>
+            {info.shutter_count > 0 && (
+              <>
+                <span>Shutter Count</span>
+                <span className="font-mono text-emerald-300">{info.shutter_count.toLocaleString()} actuations</span>
+              </>
+            )}
+            {info.lens_serial && (
+              <>
+                <span>Lens Serial</span>
+                <span className="font-mono text-neutral-200 truncate">{info.lens_serial}</span>
+              </>
+            )}
+            {info.body_serial && (
+              <>
+                <span>Body Serial</span>
+                <span className="font-mono text-neutral-200 truncate">{info.body_serial}</span>
+              </>
+            )}
+            {info.focus_distance_m > 0 && (
+              <>
+                <span>Focus Distance</span>
+                <span className="font-mono text-neutral-200">{info.focus_distance_m.toFixed(2)} m</span>
+              </>
+            )}
+          </div>
+          {info.af_points.length > 0 && (
+            <div className="pt-1 border-t border-neutral-800/80 flex items-center justify-between">
+              <span className="text-neutral-400">
+                Active AF Points ({info.af_points.filter((a) => a.active).length}/{info.af_points.length})
+              </span>
+              <Btn active={p.showAfOverlay} onClick={() => p.setShowAfOverlay(!p.showAfOverlay)}>
+                {p.showAfOverlay ? "Hide AF Overlay" : "Show AF Points"}
+              </Btn>
+            </div>
+          )}
+        </div>
+      )}
     </Panel>
   );
 }

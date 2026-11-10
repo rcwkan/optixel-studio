@@ -277,8 +277,8 @@ pub const ACCEL_NAME: &str = "CPU";
 #[cfg(target_os = "macos")]
 pub fn accel(key: &str) -> ort::ep::ExecutionProviderDispatch {
     use ort::ep::coreml::{ComputeUnits, ModelFormat};
-    // OPENLIGHT_COREML=all|ane|gpu|cpu picks the compute units (default: all)
-    let units = match std::env::var("OPENLIGHT_COREML").as_deref() {
+    // OPTIXEL_COREML=all|ane|gpu|cpu picks the compute units (default: all)
+    let units = match std::env::var("OPTIXEL_COREML").or_else(|_| std::env::var("OPENLIGHT_COREML")).as_deref() {
         Ok("ane") => ComputeUnits::CPUAndNeuralEngine,
         Ok("gpu") => ComputeUnits::CPUAndGPU,
         Ok("cpu") => ComputeUnits::CPUOnly,
@@ -567,8 +567,8 @@ pub(crate) fn open_session(path: &Path, dims: Option<[&str; 3]>, tile: usize, gp
     let fail = |e: String| format!("could not load the AI model: {e}");
     // DirectML needs sequential execution and no memory-pattern reuse; without a usable GPU it falls back to the CPU
     let b = Session::builder(env).map_err(|e| fail(e.to_string()))?;
-    // OPENLIGHT_AI_CPU=1 skips the GPU (to tell a GPU-driver problem from a model problem)
-    let b = if !gpu || std::env::var_os("OPENLIGHT_AI_CPU").is_some() {
+    // OPTIXEL_AI_CPU=1 skips the GPU (to tell a GPU-driver problem from a model problem)
+    let b = if !gpu || std::env::var_os("OPTIXEL_AI_CPU").or_else(|| std::env::var_os("OPENLIGHT_AI_CPU")).is_some() {
         b.with_auto_device(ort::session::builder::AutoDevicePolicy::PreferCPU).map_err(|e| fail(e.to_string()))?
     } else {
         b.with_execution_providers([accel(&format!("{}-{tile}", path.file_stem().and_then(|f| f.to_str()).unwrap_or("model")))]).map_err(|e| fail(e.to_string()))?
@@ -914,14 +914,14 @@ pub fn inpaint(data: &Path, id: &str, img: Img, hole: &Hole, grow: usize, prompt
 mod tests {
     use super::*;
 
-    /// Needs OPENLIGHT_TEST_AI=1: downloads the model into the app's data folder and denoises a noisy picture.
+    /// Needs OPTIXEL_TEST_AI=1 (or OPENLIGHT_TEST_AI=1): downloads the model into the app's data folder and denoises a noisy picture.
     #[test]
     fn denoise_end_to_end() {
-        if std::env::var_os("OPENLIGHT_TEST_AI").is_none() {
+        if std::env::var_os("OPTIXEL_TEST_AI").or_else(|| std::env::var_os("OPENLIGHT_TEST_AI")).is_none() {
             return;
         }
         let data = crate::data_dir();
-        let id = std::env::var("OPENLIGHT_TEST_MODEL").unwrap_or_else(|_| "scunet-real-psnr".into());
+        let id = std::env::var("OPTIXEL_TEST_MODEL").or_else(|_| std::env::var("OPENLIGHT_TEST_MODEL")).unwrap_or_else(|_| "scunet-real-psnr".into());
         let t0 = std::time::Instant::now();
         download(&data, &id, &|d, t| eprint!("\rdownload {d}/{t}")).unwrap();
         eprintln!("\ndownloaded/verified in {:?}", t0.elapsed());
@@ -960,10 +960,10 @@ mod tests {
         assert!(after < before * 0.6, "denoise did not reduce the noise enough");
     }
 
-    /// Needs OPENLIGHT_TEST_AI=1: downloads LaMa and removes a blob from a striped, gradient picture.
+    /// Needs OPTIXEL_TEST_AI=1 (or OPENLIGHT_TEST_AI=1): downloads LaMa and removes a blob from a striped, gradient picture.
     #[test]
     fn inpaint_end_to_end() {
-        if std::env::var_os("OPENLIGHT_TEST_AI").is_none() {
+        if std::env::var_os("OPTIXEL_TEST_AI").or_else(|| std::env::var_os("OPENLIGHT_TEST_AI")).is_none() {
             return;
         }
         let data = crate::data_dir();
@@ -994,10 +994,10 @@ mod tests {
         }
     }
 
-    /// Needs OPENLIGHT_TEST_AI=1: downloads Stable Diffusion inpainting into the app's data folder.
+    /// Needs OPTIXEL_TEST_AI=1 (or OPENLIGHT_TEST_AI=1): downloads Stable Diffusion inpainting into the app's data folder.
     #[test]
     fn sd_download() {
-        if std::env::var_os("OPENLIGHT_TEST_AI").is_none() {
+        if std::env::var_os("OPTIXEL_TEST_AI").or_else(|| std::env::var_os("OPENLIGHT_TEST_AI")).is_none() {
             return;
         }
         let data = crate::data_dir();
@@ -1007,10 +1007,10 @@ mod tests {
 downloaded and verified in {:?}", t0.elapsed());
     }
 
-    /// Needs OPENLIGHT_TEST_AI=1 and the model downloaded: Stable Diffusion removes a blob from a smooth picture.
+    /// Needs OPTIXEL_TEST_AI=1 (or OPENLIGHT_TEST_AI=1) and the model downloaded: Stable Diffusion removes a blob from a smooth picture.
     #[test]
     fn sd_end_to_end() {
-        if std::env::var_os("OPENLIGHT_TEST_AI").is_none() {
+        if std::env::var_os("OPTIXEL_TEST_AI").or_else(|| std::env::var_os("OPENLIGHT_TEST_AI")).is_none() {
             return;
         }
         let data = crate::data_dir();
@@ -1033,7 +1033,7 @@ downloaded and verified in {:?}", t0.elapsed());
                 }
             }
         }
-        if let Some(p) = std::env::var_os("OPENLIGHT_TEST_OUT") {
+        if let Some(p) = std::env::var_os("OPTIXEL_TEST_OUT").or_else(|| std::env::var_os("OPENLIGHT_TEST_OUT")) {
             let mut buf = image::RgbImage::new(w as u32, h as u32);
             for (i, p) in out.px.iter().enumerate() {
                 let g = encode(*p);
@@ -1047,11 +1047,14 @@ sd15-inpaint: mean error in the hole {err:.3} (was {:.3}) in {:?}", 0.95 - 0.45,
         assert!(err < 0.2, "the hole was not filled convincingly");
     }
 
-    /// Real photo: OPENLIGHT_TEST_RAW=<file> OPENLIGHT_TEST_OUT=<png> OPENLIGHT_TEST_HOLE=cx,cy,r (fractions of width).
+    /// Real photo: OPTIXEL_TEST_RAW=<file> OPTIXEL_TEST_OUT=<png> OPTIXEL_TEST_HOLE=cx,cy,r (fractions of width).
     #[test]
     fn sd_real_photo() {
-        let (Some(file), Some(out), Some(hole)) = (std::env::var_os("OPENLIGHT_TEST_RAW"), std::env::var_os("OPENLIGHT_TEST_OUT"), std::env::var("OPENLIGHT_TEST_HOLE").ok()) else { return };
-        let engine = std::env::var("OPENLIGHT_TEST_MODEL").unwrap_or_else(|_| "sd15-inpaint".into());
+        let file = std::env::var_os("OPTIXEL_TEST_RAW").or_else(|| std::env::var_os("OPENLIGHT_TEST_RAW"));
+        let out = std::env::var_os("OPTIXEL_TEST_OUT").or_else(|| std::env::var_os("OPENLIGHT_TEST_OUT"));
+        let hole = std::env::var("OPTIXEL_TEST_HOLE").or_else(|_| std::env::var("OPENLIGHT_TEST_HOLE")).ok();
+        let (Some(file), Some(out), Some(hole)) = (file, out, hole) else { return };
+        let engine = std::env::var("OPTIXEL_TEST_MODEL").or_else(|_| std::env::var("OPENLIGHT_TEST_MODEL")).unwrap_or_else(|_| "sd15-inpaint".into());
         let img = crate::develop::load(Path::new(&file), Some(1600)).unwrap();
         let (w, h) = (img.w, img.h);
         let v: Vec<f32> = hole.split(',').map(|s| s.parse().unwrap()).collect();
@@ -1074,13 +1077,13 @@ sd15-inpaint: mean error in the hole {err:.3} (was {:.3}) in {:?}", 0.95 - 0.45,
         buf.save(out).unwrap();
     }
 
-    /// Needs OPENLIGHT_TEST_AI=1 and OPENLIGHT_TEST_MODEL=<id>: downloads that model.
+    /// Needs OPTIXEL_TEST_AI=1 (or OPENLIGHT_TEST_AI=1) and OPTIXEL_TEST_MODEL=<id>: downloads that model.
     #[test]
     fn download_model() {
-        if std::env::var_os("OPENLIGHT_TEST_AI").is_none() {
+        if std::env::var_os("OPTIXEL_TEST_AI").or_else(|| std::env::var_os("OPENLIGHT_TEST_AI")).is_none() {
             return;
         }
-        let Ok(id) = std::env::var("OPENLIGHT_TEST_MODEL") else { return };
+        let Ok(id) = std::env::var("OPTIXEL_TEST_MODEL").or_else(|_| std::env::var("OPENLIGHT_TEST_MODEL")) else { return };
         let t0 = std::time::Instant::now();
         download(&crate::data_dir(), &id, &|d, t| eprint!("downloading {} / {} MB   ", d >> 20, t >> 20)).unwrap();
         eprintln!("\n{id} downloaded, verified and unpacked in {:?}", t0.elapsed());

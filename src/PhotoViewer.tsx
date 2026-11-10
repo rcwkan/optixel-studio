@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, Culling, fileManagerName, flagName, LABEL_COLORS, LABELS, Photo, thumbUrl } from "./api";
+import { api, Culling, fileManagerName, flagName, FocusPeakingResult, LABEL_COLORS, LABELS, Photo, RawInfo, thumbUrl } from "./api";
 import { Btn, Icon, Stars } from "./controls";
 
 export interface PhotoViewerProps {
@@ -52,7 +52,7 @@ export function PhotoViewer({
   // Toggles and modes (info HUD popup is hidden by default)
   const [showInfo, setShowInfo] = useState(() => {
     try {
-      const stored = localStorage.getItem("openlight_viewer_show_info");
+      const stored = localStorage.getItem("optixel_viewer_show_info") ?? localStorage.getItem("openlight_viewer_show_info");
       return stored === "true"; // defaults to false
     } catch {
       return false;
@@ -63,7 +63,7 @@ export function PhotoViewer({
     setShowInfo((prev) => {
       const next = typeof val === "boolean" ? val : !prev;
       try {
-        localStorage.setItem("openlight_viewer_show_info", String(next));
+        localStorage.setItem("optixel_viewer_show_info", String(next));
       } catch {}
       return next;
     });
@@ -74,6 +74,38 @@ export function PhotoViewer({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [highResReady, setHighResReady] = useState(false);
   const [loadingHighRes, setLoadingHighRes] = useState(false);
+  const [rawInfo, setRawInfo] = useState<RawInfo | null>(null);
+  const [showAfOverlay, setShowAfOverlay] = useState(false);
+  const [focusPeaking, setFocusPeaking] = useState<FocusPeakingResult | null>(null);
+  const [showFocusPeaking, setShowFocusPeaking] = useState(false);
+
+  useEffect(() => {
+    if (!photo) {
+      setRawInfo(null);
+      setFocusPeaking(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .rawInfo(photo.id)
+      .then((info) => !cancelled && setRawInfo(info))
+      .catch(() => !cancelled && setRawInfo(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [photo?.id]);
+
+  useEffect(() => {
+    if (!photo || !showFocusPeaking) return;
+    let cancelled = false;
+    api
+      .focusPeaking(photo.id)
+      .then((res) => !cancelled && setFocusPeaking(res))
+      .catch(() => !cancelled && setFocusPeaking(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [photo?.id, showFocusPeaking]);
 
   // Measure viewport size
   useEffect(() => {
@@ -630,6 +662,40 @@ export function PhotoViewer({
               highResReady ? "opacity-100" : "opacity-0"
             }`}
           />
+
+          {/* C++ Focus-Peaking Overlay */}
+          {showFocusPeaking && focusPeaking && (
+            <img
+              src={focusPeaking.overlay_data_url}
+              alt=""
+              draggable={false}
+              className="pointer-events-none absolute inset-0 h-full w-full object-contain mix-blend-screen"
+            />
+          )}
+
+          {/* Active AF Points & Eye-AF Overlay (MakerNotes) */}
+          {showAfOverlay && rawInfo && rawInfo.af_points.length > 0 && (
+            <svg viewBox="0 0 1 1" preserveAspectRatio="none" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
+              {rawInfo.af_points.map((af, idx) => {
+                const isEye = af.kind === "eye" || af.kind === "face";
+                const stroke = isEye ? "#10b981" : af.active ? "#ef4444" : "rgba(255,255,255,0.38)";
+                const sw = isEye || af.active ? 2 : 1;
+                return (
+                  <rect
+                    key={idx}
+                    x={af.x - af.w / 2}
+                    y={af.y - af.h / 2}
+                    width={af.w}
+                    height={af.h}
+                    fill={af.active ? (isEye ? "rgba(16,185,129,0.14)" : "rgba(239,68,68,0.14)") : "none"}
+                    stroke={stroke}
+                    strokeWidth={sw}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                );
+              })}
+            </svg>
+          )}
         </div>
 
         {/* Loading Indicator for High-Res */}
@@ -738,6 +804,26 @@ export function PhotoViewer({
                 · {flagName(photo.flag)}
                 {photo.color_label ? ` · ${photo.color_label}` : ""}
               </span>
+              {rawInfo && rawInfo.shutter_count > 0 && (
+                <>
+                  <span className="text-neutral-500">Shutter Count</span>
+                  <span className="text-emerald-300 font-mono">{rawInfo.shutter_count.toLocaleString()}</span>
+                </>
+              )}
+              {rawInfo && rawInfo.lens_serial && (
+                <>
+                  <span className="text-neutral-500">Lens Serial</span>
+                  <span className="text-neutral-300 font-mono truncate">{rawInfo.lens_serial}</span>
+                </>
+              )}
+              {focusPeaking && (
+                <>
+                  <span className="text-neutral-500">Focus / Blink</span>
+                  <span className="text-emerald-300 font-mono">
+                    {focusPeaking.focus_score}% · {focusPeaking.blink_detected ? "⚠ Blink" : "✓ Open"}
+                  </span>
+                </>
+              )}
             </div>
 
             <div className="mt-2.5 pt-2 border-t border-neutral-800/80 flex items-center justify-between text-[10px] text-neutral-500">
@@ -872,6 +958,28 @@ export function PhotoViewer({
           </button>
 
           <span className="text-neutral-600 px-0.5">|</span>
+
+          {rawInfo && rawInfo.af_points.length > 0 && (
+            <button
+              onClick={() => setShowAfOverlay(!showAfOverlay)}
+              className={`rounded px-2 py-1 text-xs font-medium border border-neutral-700/60 transition-colors ${
+                showAfOverlay ? "bg-rose-600 text-white font-semibold" : "bg-neutral-800 text-neutral-400 hover:text-white"
+              }`}
+              title="Toggle Active AF Points & Eye-AF Overlay (decoded from camera MakerNotes)"
+            >
+              ⌖ AF ({rawInfo.af_points.filter((a) => a.active).length})
+            </button>
+          )}
+
+          <button
+            onClick={() => setShowFocusPeaking(!showFocusPeaking)}
+            className={`rounded px-2 py-1 text-xs font-medium border border-neutral-700/60 transition-colors ${
+              showFocusPeaking ? "bg-emerald-600 text-white font-semibold" : "bg-neutral-800 text-neutral-400 hover:text-white"
+            }`}
+            title="Toggle C++ Focus-Peaking & Blink / EAR Culling Overlay"
+          >
+            ◉ Peaking
+          </button>
 
           <button
             onClick={() => toggleInfo()}

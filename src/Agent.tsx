@@ -32,9 +32,9 @@ export function Agent({ info, settings, setSettings, logs, clearLogs }: { info: 
   const url = `http://127.0.0.1:${settings.mcp_port}/mcp`;
   const token = settings.mcp_token;
   const snippets = {
-    code: `claude mcp add --transport http openlight ${url} --header "Authorization: Bearer ${token}"`,
-    desktop: JSON.stringify({ mcpServers: { openlight: { command: info.exe ?? "openlight-studio", args: ["--mcp-stdio"] } } }, null, 2),
-    json: JSON.stringify({ mcpServers: { openlight: { type: "http", url, headers: { Authorization: `Bearer ${token}` } } } }, null, 2),
+    code: `claude mcp add --transport http optixel ${url} --header "Authorization: Bearer ${token}"`,
+    desktop: JSON.stringify({ mcpServers: { optixel: { command: info.exe ?? "optixel-studio", args: ["--mcp-stdio"] } } }, null, 2),
+    json: JSON.stringify({ mcpServers: { optixel: { type: "http", url, headers: { Authorization: `Bearer ${token}` } } } }, null, 2),
   };
   const prov: Provider | undefined = settings.providers[sel];
   const setProv = (patch: Partial<Provider>) => setSettings({ ...settings, providers: settings.providers.map((p, i) => (i === sel ? { ...p, ...patch } : p)) });
@@ -69,11 +69,11 @@ export function Agent({ info, settings, setSettings, logs, clearLogs }: { info: 
                 Port
                 <input className="w-20 rounded bg-neutral-800 px-2 py-1" value={settings.mcp_port} onChange={(e) => setSettings({ ...settings, mcp_port: +e.target.value.replace(/\D/g, "") || 41920 })} />
               </label>
-              <Btn onClick={() => save(settings, "Saved — restart OpenLight to apply transport changes")}>Save</Btn>
+              <Btn onClick={() => save(settings, "Saved — restart Optixel to apply transport changes")}>Save</Btn>
             </div>
           </div>
           <p className="mt-3 text-[11px] text-neutral-500">
-            Streamable HTTP on loopback only, protected by the token. stdio: run <code>openlight-studio --mcp-stdio</code> — it attaches to this window when open, else edits the catalog headless.
+            Streamable HTTP on loopback only, protected by the token. stdio: run <code>optixel-studio --mcp-stdio</code> — it attaches to this window when open, else edits the catalog headless.
             Every tool call is one undoable history step.
           </p>
         </section>
@@ -85,7 +85,7 @@ export function Agent({ info, settings, setSettings, logs, clearLogs }: { info: 
           <Btn className="mt-2" onClick={() => navigator.clipboard.writeText(snippets[client])}>
             Copy with token
           </Btn>
-          <p className="mt-2 text-[11px] text-neutral-500">Tools: catalog_query, culling_batch_update, develop_apply_parameters, develop_auto, auto_run, mask_create_and_edit, retouch_remove_objects, ai_reconstruct_and_retouch, batch_export, photo_inspect. Resources: openlight://catalog/summary, selection/active, photo/{"{id}"}/state|telemetry|preview.</p>
+          <p className="mt-2 text-[11px] text-neutral-500">Tools: catalog_query, culling_batch_update, develop_apply_parameters, develop_auto, auto_run, mask_create_and_edit, retouch_remove_objects, ai_reconstruct_and_retouch, batch_export, photo_inspect. Resources: optixel://catalog/summary, selection/active, photo/{"{id}"}/state|telemetry|preview.</p>
         </section>
 
         <section className={`${card} flex min-h-64 flex-1 flex-col`}>
@@ -193,7 +193,7 @@ export function Agent({ info, settings, setSettings, logs, clearLogs }: { info: 
               <p className="pt-2 text-[11px] text-neutral-500">
                 {prov.kind === "cli"
                   ? "CLI agents receive a rendered preview, telemetry and an MCP config for this app, then edit through MCP tools — the Develop view updates live."
-                  : "HTTP providers get the preview image, histogram and edit state, and must answer with an AiTuningResponse JSON that OpenLight validates, clamps and applies (with an optional verification pass)."}
+                  : "HTTP providers get the preview image, histogram and edit state, and must answer with an AiTuningResponse JSON that Optixel validates, clamps and applies (with an optional verification pass)."}
               </p>
             </div>
           )}

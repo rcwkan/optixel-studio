@@ -1,8 +1,7 @@
-//! Optional GPU acceleration (wgpu: DX12/Vulkan/Metal). Detected once; every entry point returns
-//! `None` when there is no GPU or it is switched off, and the caller keeps its CPU path.
-//! One upload and one readback cover gain, tone, curves, colour and (when nothing blurs in between)
-//! the Pro stack. Blur, mask, lens and heal stages stay on the CPU.
-//! ponytail: add further per-pixel stages to `WGSL`; blur-based ones need their own passes.
+//! Optional GPU acceleration (wgpu: DX12/Vulkan/Metal) using Ahead-of-Time (AOT) compiled
+//! stripped SPIR-V (.spv) binary compute kernels generated at build time (`build.rs`).
+//! Detected once; every entry point returns `None` when there is no GPU or it is switched off,
+//! and the caller keeps its CPU path.
 
 use std::sync::{
     OnceLock,
@@ -16,11 +15,18 @@ type Px = [f32; 3];
 const CHUNK: usize = 8 << 20;
 
 /// Floats of colour parameters, then of Pro parameters, in the order `develop.rs` fills them
-/// (mirrored by the offsets in `WGSL`). A zeroed section switches that stage off.
+/// (mirrored by the offsets in `develop_stack.wgsl`). A zeroed section switches that stage off.
 pub const COLOR_LEN: usize = 132;
 pub const PRO_LEN: usize = 73;
 /// Point-colour swatches that fit in the colour section (11 floats each).
 pub const MAX_SW: usize = 8;
+
+/// Ahead-of-Time (AOT) stripped SPIR-V compute kernels embedded at build time.
+pub const DEVELOP_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/develop_stack.spv"));
+pub const CLARITY_DEHAZE_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/clarity_dehaze.spv"));
+pub const LUT3D_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lut3d.spv"));
+pub const CA_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/chromatic_aberration.spv"));
+pub const SCOPES_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/scopes.spv"));
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
 static GPU: OnceLock<Option<Gpu>> = OnceLock::new();
@@ -29,7 +35,15 @@ struct Gpu {
     name: String,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    lock: std::sync::Mutex<()>,
     pipeline: wgpu::ComputePipeline,
+    #[allow(dead_code)]
+    clarity_pipeline: wgpu::ComputePipeline,
+    #[allow(dead_code)]
+    lut3d_pipeline: wgpu::ComputePipeline,
+    #[allow(dead_code)]
+    ca_pipeline: wgpu::ComputePipeline,
+    scopes_pipeline: wgpu::ComputePipeline,
 }
 
 /// Global tone (`develop::Tone`) coefficients.
@@ -53,257 +67,20 @@ pub struct Stack<'a> {
     pub levels: Option<&'a [Vec<f32>; 3]>,
 }
 
-const WGSL: &str = r#"
-struct U {
-  gain: vec3<f32>, n: u32,
-  a_sh: f32, a_hi: f32, bp: f32, wp: f32,
-  k: f32, use_tone: u32, use_curves: u32, lut_n: u32,
-  pad0: u32, pad1: u32, pad2: u32, pad3: u32,
-};
-@group(0) @binding(0) var<uniform> u: U;
-@group(0) @binding(1) var<storage, read> src: array<f32>;
-@group(0) @binding(2) var<storage, read_write> dst: array<f32>;
-@group(0) @binding(3) var<storage, read> lut: array<f32>;
-@group(0) @binding(4) var<storage, read> P: array<f32>;
-@group(0) @binding(5) var<storage, read> lv: array<f32>;
-
-const PR: u32 = 132u;
-const PI: f32 = 3.14159265358979;
-var<private> BANDS: array<f32, 8> = array<f32, 8>(29.0, 55.0, 100.0, 142.0, 195.0, 264.0, 295.0, 330.0);
-
-fn rem(a: f32, b: f32) -> f32 { return a - b * floor(a / b); }
-fn pw(x: f32, y: f32) -> f32 { return select(0.0, pow(x, y), x > 0.0); }
-fn sm(e0: f32, e1: f32, x: f32) -> f32 {
-  let t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
-  return t * t * (3.0 - 2.0 * t);
+fn make_pipeline(device: &wgpu::Device, label: &str, spv: &[u8], entry_point: &str) -> wgpu::ComputePipeline {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::util::make_spirv(spv),
+    });
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some(label),
+        layout: None,
+        module: &module,
+        entry_point: Some(entry_point),
+        compilation_options: Default::default(),
+        cache: None,
+    })
 }
-fn cbrt(x: f32) -> f32 { return sign(x) * pw(abs(x), 1.0 / 3.0); }
-fn srgb_eotf(v: f32) -> f32 { return select(pw((v + 0.055) / 1.055, 2.4), v / 12.92, v <= 0.04045); }
-fn srgb_oetf(l: f32) -> f32 { return select(1.055 * pw(l, 1.0 / 2.4) - 0.055, l * 12.92, l <= 0.0031308); }
-
-fn oklab(p: vec3<f32>) -> vec3<f32> {
-  let l = cbrt(0.6166884 * p.x + 0.3601591 * p.y + 0.0230433 * p.z);
-  let m = cbrt(0.2651402 * p.x + 0.6358565 * p.y + 0.0990302 * p.z);
-  let s = cbrt(0.1001506 * p.x + 0.2040043 * p.y + 0.6963247 * p.z);
-  return vec3<f32>(
-    0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
-    1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
-    0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s);
-}
-fn from_oklab(c: vec3<f32>) -> vec3<f32> {
-  let l = c.x + 0.3963377774 * c.y + 0.2158037573 * c.z;
-  let m = c.x - 0.1055613458 * c.y - 0.0638541728 * c.z;
-  let s = c.x - 0.0894841775 * c.y - 1.2914855480 * c.z;
-  let a = l * l * l; let b = m * m * m; let d = s * s * s;
-  return vec3<f32>(
-    2.1401404 * a - 1.2463560 * b + 0.1064317 * d,
-    -0.8848325 * a + 2.1631727 * b - 0.2783616 * d,
-    -0.0485791 * a - 0.4544909 * b + 1.5023563 * d);
-}
-fn enc(p: vec3<f32>) -> vec3<f32> {
-  let r = vec3<f32>(
-    1.6604910 * p.x - 0.5876411 * p.y - 0.0728499 * p.z,
-    -0.1245505 * p.x + 1.1328999 * p.y - 0.0083494 * p.z,
-    -0.0181508 * p.x - 0.1005789 * p.y + 1.1187297 * p.z);
-  return vec3<f32>(srgb_oetf(clamp(r.x, 0.0, 1.0)), srgb_oetf(clamp(r.y, 0.0, 1.0)), srgb_oetf(clamp(r.z, 0.0, 1.0)));
-}
-fn dec(e: vec3<f32>) -> vec3<f32> {
-  let q = vec3<f32>(srgb_eotf(e.x), srgb_eotf(e.y), srgb_eotf(e.z));
-  return vec3<f32>(
-    0.6274039 * q.x + 0.3292830 * q.y + 0.0433131 * q.z,
-    0.0690973 * q.x + 0.9195404 * q.y + 0.0113623 * q.z,
-    0.0163914 * q.x + 0.0880133 * q.y + 0.8955953 * q.z);
-}
-
-fn tone_ch(c: f32) -> f32 {
-  var v = (sqrt(max(c, 0.0)) - u.bp) / (u.wp - u.bp);
-  if (v > 0.0 && v < 1.0) { v = v + u.k * (v * v * (3.0 - 2.0 * v) - v); }
-  v = max(v, 0.0);
-  return v * v;
-}
-
-fn curve_ch(c: f32, ch: u32) -> f32 {
-  let v = sqrt(max(c, 0.0));
-  let base = ch * (u.lut_n + 1u);
-  var o: f32;
-  if (v >= 1.0) {
-    o = lut[base + u.lut_n] + (v - 1.0);
-  } else {
-    let f = v * f32(u.lut_n);
-    let i = u32(f);
-    o = lut[base + i] + (lut[base + i + 1u] - lut[base + i]) * (f - f32(i));
-  }
-  return o * o;
-}
-
-fn color_ops(p: vec3<f32>) -> vec3<f32> {
-  let lab = oklab(p);
-  var l = lab.x;
-  var c = length(lab.yz);
-  var h = atan2(lab.z, lab.y);
-  let sat = P[2]; let vib = P[3];
-  if (sat != 0.0 || vib != 0.0) {
-    let hd = rem(degrees(h), 360.0);
-    let skin = 1.0 - 0.6 * sm(25.0, 0.0, abs(hd - 62.0));
-    let v = vib * (1.0 - min(c / 0.25, 1.0)) * select(1.0, skin, vib > 0.0);
-    c = c * max((1.0 + sat) * (1.0 + v), 0.0);
-  }
-  if (P[4] != 0.0) {
-    let hd = rem(degrees(h), 360.0);
-    var i = 7u;
-    for (var k = 0u; k < 8u; k++) { if (BANDS[k] <= hd) { i = k; } }
-    let j = (i + 1u) % 8u;
-    let span = rem(BANDS[j] - BANDS[i], 360.0);
-    let t = sm(0.0, 1.0, rem(hd - BANDS[i], 360.0) / span);
-    let gate = sm(0.0, 0.06, c);
-    let s0 = (P[5u + i * 3u] * (1.0 - t) + P[5u + j * 3u] * t) * gate;
-    let s1 = (P[6u + i * 3u] * (1.0 - t) + P[6u + j * 3u] * t) * gate;
-    let s2 = (P[7u + i * 3u] * (1.0 - t) + P[7u + j * 3u] * t) * gate;
-    h += s0;
-    c = c * max(1.0 + s1, 0.0);
-    l += s2;
-  }
-  let nsw = u32(P[44]);
-  for (var n = 0u; n < nsw; n++) {
-    let o = 45u + n * 11u;
-    let dh = rem(h - P[o] + PI, 2.0 * PI) - PI;
-    let a = dh / P[o + 3u];
-    let b = (c - P[o + 1u]) / P[o + 4u];
-    let e = (l - P[o + 2u]) / P[o + 5u];
-    let d = sqrt(a * a + b * b + e * e);
-    let wgt = 1.0 - sm(P[o + 6u], P[o + 7u], d);
-    if (wgt > 0.0) {
-      h += P[o + 8u] * wgt;
-      c = c * max(1.0 + P[o + 9u] * wgt, 0.0);
-      l += P[o + 10u] * wgt;
-    }
-  }
-  if (P[1] != 0.0) { c = 0.0; }
-  var a2 = c * cos(h);
-  var b2 = c * sin(h);
-  if (P[29] != 0.0) {
-    var lb = clamp(l, 0.0, 1.0);
-    let bal = P[42]; let k = P[43];
-    if (bal != 1.0) { lb = pw(lb, bal); }
-    var w = vec3<f32>((1.0 - lb) * (1.0 - lb), 2.0 * lb * (1.0 - lb), lb * lb);
-    if (k != 1.0) {
-      w = vec3<f32>(pw(w.x, k), pw(w.y, k), pw(w.z, k));
-      w = w / (w.x + w.y + w.z);
-    }
-    l += w.x * P[30] + w.y * P[33] + w.z * P[36];
-    a2 += w.x * P[31] + w.y * P[34] + w.z * P[37];
-    b2 += w.x * P[32] + w.y * P[35] + w.z * P[38];
-    l += P[39]; a2 += P[40]; b2 += P[41];
-  }
-  return from_oklab(vec3<f32>(l, a2, b2));
-}
-
-fn pro_ops(pin: vec3<f32>) -> vec3<f32> {
-  var p = pin;
-  if (P[PR] != 0.0) {
-    let e = enc(p);
-    var o = vec3<f32>(0.0);
-    for (var c = 0u; c < 3u; c++) {
-      let f = e[c] * 1024.0;
-      let i = min(u32(f), 1023u);
-      let b = c * 1025u + i;
-      o[c] = lv[b] + (lv[b + 1u] - lv[b]) * (f - f32(i));
-    }
-    p = dec(o);
-  }
-  if (P[PR + 1u] != 0.0) {
-    let sn = P[PR + 2u]; let cs = P[PR + 3u]; let sat = P[PR + 4u]; let light = P[PR + 5u];
-    let lab = oklab(p);
-    var l = lab.x; var a = lab.y; var b = lab.z;
-    if (P[PR + 6u] != 0.0) {
-      let k = clamp(4.0 * l * (1.0 - l), 0.0, 1.0);
-      a = P[PR + 7u] * k; b = P[PR + 8u] * k;
-    } else {
-      let na = (a * cs - b * sn) * sat;
-      b = (a * sn + b * cs) * sat;
-      a = na;
-    }
-    if (light > 0.0) { l += (1.0 - l) * light; } else { l *= 1.0 + light; }
-    let k = 1.0 - abs(light);
-    p = from_oklab(vec3<f32>(l, a * k, b * k));
-  }
-  if (P[PR + 9u] != 0.0) {
-    let e = enc(p);
-    let mx = max(e.x, max(e.y, e.z));
-    let mn = min(e.x, min(e.y, e.z));
-    let md = e.x + e.y + e.z - mx - mn;
-    var wts = array<f32, 9>(
-      select(0.0, mx - md, e.x == mx), select(0.0, md - mn, e.z == mn),
-      select(0.0, mx - md, e.y == mx), select(0.0, md - mn, e.x == mn),
-      select(0.0, mx - md, e.z == mx), select(0.0, md - mn, e.y == mn),
-      max((mn - 0.5) * 2.0, 0.0), 1.0 - abs(mx - 0.5) - abs(mn - 0.5), max((0.5 - mx) * 2.0, 0.0));
-    var o = e;
-    let absolute = P[PR + 10u] != 0.0;
-    for (var i = 0u; i < 9u; i++) {
-      if (wts[i] > 0.0) {
-        let f3 = P[PR + 14u + i * 4u];
-        for (var c = 0u; c < 3u; c++) {
-          let fc = P[PR + 11u + i * 4u + c];
-          let ink = fc + f3 * (1.0 + fc);
-          o[c] -= wts[i] * ink * select(1.0 - e[c], 1.0, absolute);
-        }
-      }
-    }
-    p = dec(clamp(o, vec3<f32>(0.0), vec3<f32>(1.0)));
-  }
-  if (P[PR + 47u] != 0.0) {
-    let e = enc(p);
-    var o = vec3<f32>(0.0);
-    for (var r = 0u; r < 3u; r++) {
-      let b = PR + 48u + r * 4u;
-      o[r] = clamp(P[b] * e.x + P[b + 1u] * e.y + P[b + 2u] * e.z + P[b + 3u], 0.0, 1.0);
-    }
-    p = dec(o);
-  }
-  if (P[PR + 60u] != 0.0) {
-    let q = oklab(p);
-    let s = vec3<f32>(P[PR + 61u], P[PR + 62u], P[PR + 63u]);
-    let h = vec3<f32>(P[PR + 64u], P[PR + 65u], P[PR + 66u]);
-    let g = mix(s, h, clamp(q.x, 0.0, 1.0));
-    p = from_oklab(mix(q, g, P[PR + 67u]));
-  }
-  if (P[PR + 68u] != 0.0 || P[PR + 69u] != 0.0 || P[PR + 71u] != 0.0) {
-    var e = enc(p);
-    if (P[PR + 68u] != 0.0) { e = vec3<f32>(1.0) - e; }
-    let n = P[PR + 69u];
-    if (n != 0.0) { e = floor(e * n + vec3<f32>(0.5)) / n; }
-    if (P[PR + 71u] != 0.0) {
-      let d = dec(e);
-      let y = clamp(0.2627 * d.x + 0.6780 * d.y + 0.0593 * d.z, 0.0, 1.0);
-      e = vec3<f32>(select(0.0, 1.0, srgb_oetf(y) >= P[PR + 70u]));
-    }
-    p = dec(e);
-  }
-  return p;
-}
-
-@compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-  let i = id.x;
-  if (i >= u.n) { return; }
-  var p = vec3<f32>(src[3u*i], src[3u*i+1u], src[3u*i+2u]) * u.gain;
-  if (u.use_tone != 0u) {
-    if (u.a_sh != 0.0 || u.a_hi != 0.0) {
-      let v = sqrt(max(max(max(p.x, p.y), p.z), 0.0));
-      let ws = 1.0 - smoothstep(0.0, 0.5, v);
-      let wh = smoothstep(0.35, 1.0, v);
-      p = p * exp2(u.a_sh * ws + u.a_hi * wh);
-    }
-    p = vec3<f32>(tone_ch(p.x), tone_ch(p.y), tone_ch(p.z));
-  }
-  if (u.use_curves != 0u) {
-    p = vec3<f32>(curve_ch(p.x, 0u), curve_ch(p.y, 1u), curve_ch(p.z, 2u));
-  }
-  if (P[0] != 0.0) { p = color_ops(p); }
-  if (P[PR + 72u] != 0.0) { p = pro_ops(p); }
-  dst[3u*i] = p.x; dst[3u*i+1u] = p.y; dst[3u*i+2u] = p.z;
-}
-"#;
 
 fn init() -> Option<Gpu> {
     let instance = wgpu::Instance::default();
@@ -317,19 +94,22 @@ fn init() -> Option<Gpu> {
         return None; // software rasterizer: slower than our rayon path
     }
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("develop"),
-        source: wgpu::ShaderSource::Wgsl(WGSL.into()),
-    });
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("develop"),
-        layout: None,
-        module: &module,
-        entry_point: Some("main"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
-    Some(Gpu { name: info.name, device, queue, pipeline })
+    let pipeline = make_pipeline(&device, "develop_stack_spv", DEVELOP_SPV, "main");
+    let clarity_pipeline = make_pipeline(&device, "clarity_dehaze_spv", CLARITY_DEHAZE_SPV, "main");
+    let lut3d_pipeline = make_pipeline(&device, "lut3d_spv", LUT3D_SPV, "main");
+    let ca_pipeline = make_pipeline(&device, "chromatic_aberration_spv", CA_SPV, "main");
+    let scopes_pipeline = make_pipeline(&device, "scopes_spv", SCOPES_SPV, "accumulate");
+    Some(Gpu {
+        name: info.name,
+        device,
+        queue,
+        lock: std::sync::Mutex::new(()),
+        pipeline,
+        clarity_pipeline,
+        lut3d_pipeline,
+        ca_pipeline,
+        scopes_pipeline,
+    })
 }
 
 fn gpu() -> Option<&'static Gpu> {
@@ -345,6 +125,18 @@ pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Relaxed);
 }
 
+/// Returns the list of embedded AOT SPIR-V binary modules and their sizes in bytes.
+#[allow(dead_code)]
+pub fn spirv_manifest() -> Vec<(&'static str, usize)> {
+    vec![
+        ("develop_stack.spv", DEVELOP_SPV.len()),
+        ("clarity_dehaze.spv", CLARITY_DEHAZE_SPV.len()),
+        ("lut3d.spv", LUT3D_SPV.len()),
+        ("chromatic_aberration.spv", CA_SPV.len()),
+        ("scopes.spv", SCOPES_SPV.len()),
+    ]
+}
+
 /// Runs the stack over `src`. `None` = not available (off, no GPU, or a device error): use the CPU path.
 pub fn run(src: &[Px], s: &Stack) -> Option<Vec<Px>> {
     if !ENABLED.load(Ordering::Relaxed) {
@@ -352,7 +144,11 @@ pub fn run(src: &[Px], s: &Stack) -> Option<Vec<Px>> {
     }
     let g = gpu()?;
     let buf = |v: &[f32]| {
-        g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(v), usage: wgpu::BufferUsages::STORAGE })
+        g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(v),
+            usage: wgpu::BufferUsages::STORAGE,
+        })
     };
     let lut_n = s.curves.map_or(0, |l| l[0].len() as u32 - 1);
     let lut = buf(&s.curves.map_or_else(|| vec![0.0; 3], |l| l.concat()));
@@ -370,6 +166,7 @@ fn entry(binding: u32, b: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
 }
 
 fn dispatch(g: &Gpu, px: &[Px], s: &Stack, lut_n: u32, [lut, prm, lv]: [&wgpu::Buffer; 3]) -> Option<Vec<Px>> {
+    let _guard = g.lock.lock().ok()?;
     let bytes = std::mem::size_of_val(px) as u64;
     let t = s.tone.unwrap_or(ToneP { a_sh: 0.0, a_hi: 0.0, bp: 0.0, wp: 1.0, k: 0.0 });
     // ints are passed as raw bits: the shader reads them as u32
@@ -427,4 +224,392 @@ fn dispatch(g: &Gpu, px: &[Px], s: &Stack, lut_n: u32, [lut, prm, lv]: [&wgpu::B
     drop(data);
     read.unmap();
     Some(out)
+}
+
+#[allow(dead_code)]
+fn px_to_vec4(src: &[Px]) -> Vec<[f32; 4]> {
+    src.iter().map(|p| [p[0], p[1], p[2], 1.0]).collect()
+}
+
+#[allow(dead_code)]
+fn readback_vec4(g: &Gpu, dst: &wgpu::Buffer, count: usize) -> Option<Vec<Px>> {
+    let bytes = (count * 16) as u64;
+    let read = g.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: bytes,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut enc = g.device.create_command_encoder(&Default::default());
+    enc.copy_buffer_to_buffer(dst, 0, &read, 0, bytes);
+    g.queue.submit([enc.finish()]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    read.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    g.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+    rx.recv().ok()?.ok()?;
+    let data = read.slice(..).get_mapped_range().ok()?;
+    let out: Vec<Px> = bytemuck::cast_slice::<u8, [f32; 4]>(&data)
+        .iter()
+        .map(|v| [v[0], v[1], v[2]])
+        .collect();
+    drop(data);
+    read.unmap();
+    Some(out)
+}
+
+/// Runs the pre-compiled SPIR-V Local Clarity, Texture & Dark-Channel Dehaze compute kernel.
+#[allow(dead_code)]
+pub fn run_clarity_dehaze(src: &[Px], w: u32, h: u32, clarity: f32, dehaze: f32, texture_amt: f32) -> Option<Vec<Px>> {
+    if !ENABLED.load(Ordering::Relaxed) || (w as usize) * (h as usize) != src.len() {
+        return None;
+    }
+    let g = gpu()?;
+    let _guard = g.lock.lock().ok()?;
+    let src4 = px_to_vec4(src);
+    let bytes = (src4.len() * 16) as u64;
+    if bytes > 120 * 1024 * 1024 {
+        return None;
+    }
+    let radius = ((w.max(h) as f32) * 0.004).round().clamp(2.0, 16.0) as u32;
+    let bits = f32::from_bits;
+    let u = [bits(w), bits(h), clarity, dehaze, texture_amt, bits(radius), 0.0, 0.0];
+    let uni = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&u),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let src_buf = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&src4),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let dst_buf = g.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: bytes,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let bind = g.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &g.clarity_pipeline.get_bind_group_layout(0),
+        entries: &[entry(0, &src_buf), entry(1, &dst_buf), entry(2, &uni)],
+    });
+    let mut enc = g.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = enc.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&g.clarity_pipeline);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.dispatch_workgroups(w.div_ceil(16), h.div_ceil(16), 1);
+    }
+    g.queue.submit([enc.finish()]);
+    readback_vec4(g, &dst_buf, src.len())
+}
+
+/// Runs the pre-compiled SPIR-V 3D LUT trilinear interpolation compute kernel.
+#[allow(dead_code)]
+pub fn run_lut3d(src: &[Px], w: u32, h: u32, lut_rgb: &[Px], lut_size: u32, strength: f32) -> Option<Vec<Px>> {
+    if !ENABLED.load(Ordering::Relaxed) || (w as usize) * (h as usize) != src.len() {
+        return None;
+    }
+    let g = gpu()?;
+    let _guard = g.lock.lock().ok()?;
+    let src4 = px_to_vec4(src);
+    let lut4 = px_to_vec4(lut_rgb);
+    let bytes = (src4.len() * 16) as u64;
+    if bytes > 120 * 1024 * 1024 {
+        return None;
+    }
+    let bits = f32::from_bits;
+    let u = [bits(w), bits(h), bits(lut_size), strength];
+    let uni = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&u),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let src_buf = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&src4),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let lut_buf = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&lut4),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let dst_buf = g.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: bytes,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let bind = g.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &g.lut3d_pipeline.get_bind_group_layout(0),
+        entries: &[entry(0, &src_buf), entry(1, &lut_buf), entry(2, &dst_buf), entry(3, &uni)],
+    });
+    let mut enc = g.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = enc.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&g.lut3d_pipeline);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.dispatch_workgroups(w.div_ceil(16), h.div_ceil(16), 1);
+    }
+    g.queue.submit([enc.finish()]);
+    readback_vec4(g, &dst_buf, src.len())
+}
+
+/// Runs the pre-compiled SPIR-V Chromatic Aberration (lateral + axial defringe) compute kernel.
+#[allow(dead_code)]
+pub fn run_chromatic_aberration(
+    src: &[Px],
+    w: u32,
+    h: u32,
+    ca_red_cyan: f32,
+    ca_blue_yellow: f32,
+    axial_defringe: f32,
+) -> Option<Vec<Px>> {
+    if !ENABLED.load(Ordering::Relaxed) || (w as usize) * (h as usize) != src.len() {
+        return None;
+    }
+    let g = gpu()?;
+    let _guard = g.lock.lock().ok()?;
+    let src4 = px_to_vec4(src);
+    let bytes = (src4.len() * 16) as u64;
+    if bytes > 120 * 1024 * 1024 {
+        return None;
+    }
+    let bits = f32::from_bits;
+    let u = [bits(w), bits(h), ca_red_cyan, ca_blue_yellow, axial_defringe, 0.0, 0.0, 0.0];
+    let uni = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&u),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let src_buf = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&src4),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let dst_buf = g.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: bytes,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let bind = g.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &g.ca_pipeline.get_bind_group_layout(0),
+        entries: &[entry(0, &src_buf), entry(1, &dst_buf), entry(2, &uni)],
+    });
+    let mut enc = g.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = enc.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&g.ca_pipeline);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.dispatch_workgroups(w.div_ceil(16), h.div_ceil(16), 1);
+    }
+    g.queue.submit([enc.finish()]);
+    readback_vec4(g, &dst_buf, src.len())
+}
+
+/// Runs the pre-compiled SPIR-V RGB Parade & Waveform scope accumulation kernel on the GPU.
+pub fn run_scopes(src_rgba: &[u8], w: u32, h: u32, scope_w: u32, scope_h: u32) -> Option<(Vec<u8>, Vec<u8>)> {
+    if !ENABLED.load(Ordering::Relaxed) || src_rgba.len() < (w as usize) * (h as usize) * 4 {
+        return None;
+    }
+    let g = gpu()?;
+    let _guard = g.lock.lock().ok()?;
+    let px_count = (w as usize) * (h as usize);
+    let mut src4 = Vec::with_capacity(px_count);
+    for px in src_rgba[..px_count * 4].chunks_exact(4) {
+        src4.push([
+            px[0] as f32 / 255.0,
+            px[1] as f32 / 255.0,
+            px[2] as f32 / 255.0,
+            1.0f32,
+        ]);
+    }
+    let bin_len = (scope_w as usize) * (scope_h as usize) * 3;
+    let bin_bytes = (bin_len * 4) as u64;
+    let zeros = vec![0u32; bin_len];
+
+    let bits = f32::from_bits;
+    let u = [bits(w), bits(h), bits(scope_w), bits(scope_h)];
+    let uni = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&u),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let src_buf = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&src4),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let parade_buf = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&zeros),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    });
+    let wf_buf = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&zeros),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    });
+    let read_parade = g.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: bin_bytes,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let read_wf = g.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: bin_bytes,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let bind = g.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &g.scopes_pipeline.get_bind_group_layout(0),
+        entries: &[
+            entry(0, &src_buf),
+            entry(1, &parade_buf),
+            entry(2, &wf_buf),
+            entry(3, &uni),
+        ],
+    });
+    let mut enc = g.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = enc.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&g.scopes_pipeline);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.dispatch_workgroups(w.div_ceil(16), h.div_ceil(16), 1);
+    }
+    enc.copy_buffer_to_buffer(&parade_buf, 0, &read_parade, 0, bin_bytes);
+    enc.copy_buffer_to_buffer(&wf_buf, 0, &read_wf, 0, bin_bytes);
+    g.queue.submit([enc.finish()]);
+
+    let (tx1, rx1) = std::sync::mpsc::channel();
+    read_parade.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx1.send(r);
+    });
+    let (tx2, rx2) = std::sync::mpsc::channel();
+    read_wf.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx2.send(r);
+    });
+    g.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+    rx1.recv().ok()?.ok()?;
+    rx2.recv().ok()?.ok()?;
+
+    let p_data = read_parade.slice(..).get_mapped_range().ok()?;
+    let w_data = read_wf.slice(..).get_mapped_range().ok()?;
+    let p_bins: &[u32] = bytemuck::cast_slice(&p_data);
+    let w_bins: &[u32] = bytemuck::cast_slice(&w_data);
+
+    let sw = scope_w as usize;
+    let sh = scope_h as usize;
+    let scale = ((h as f32) / (sh as f32).max(1.0)).max(1.0) * 3.5;
+
+    let mut parade_rgba = vec![0u8; sw * sh * 4];
+    let mut wf_rgba = vec![0u8; sw * sh * 4];
+    let graticule_rows = [sh / 4, sh / 2, (sh * 3) / 4];
+
+    for y in 0..sh {
+        let is_grat = graticule_rows.contains(&y);
+        let bg = if is_grat { 34u8 } else { 14u8 };
+        for x in 0..sw {
+            let idx = y * sw + x;
+            let pr = p_bins[idx * 3] as f32;
+            let pg = p_bins[idx * 3 + 1] as f32;
+            let pb = p_bins[idx * 3 + 2] as f32;
+
+            let r_val = ((1.0 - (-pr / scale).exp()) * 255.0).clamp(bg as f32, 255.0) as u8;
+            let g_val = ((1.0 - (-pg / scale).exp()) * 255.0).clamp(bg as f32, 255.0) as u8;
+            let b_val = ((1.0 - (-pb / scale).exp()) * 255.0).clamp(bg as f32, 255.0) as u8;
+            parade_rgba[idx * 4] = r_val;
+            parade_rgba[idx * 4 + 1] = g_val;
+            parade_rgba[idx * 4 + 2] = b_val;
+            parade_rgba[idx * 4 + 3] = 255;
+
+            let wr = w_bins[idx * 3] as f32 / 16.0;
+            let wg = w_bins[idx * 3 + 1] as f32 / 16.0;
+            let wb = w_bins[idx * 3 + 2] as f32 / 16.0;
+            wf_rgba[idx * 4] = ((1.0 - (-wr / scale).exp()) * 255.0).clamp(bg as f32, 255.0) as u8;
+            wf_rgba[idx * 4 + 1] = ((1.0 - (-wg / scale).exp()) * 255.0).clamp(bg as f32, 255.0) as u8;
+            wf_rgba[idx * 4 + 2] = ((1.0 - (-wb / scale).exp()) * 255.0).clamp(bg as f32, 255.0) as u8;
+            wf_rgba[idx * 4 + 3] = 255;
+        }
+    }
+
+    drop(p_data);
+    drop(w_data);
+    read_parade.unmap();
+    read_wf.unmap();
+    Some((parade_rgba, wf_rgba))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spirv_binaries_have_valid_magic_headers() {
+        assert_eq!(spirv_manifest().len(), 5);
+        for (name, bytes) in [
+            ("develop_stack.spv", DEVELOP_SPV),
+            ("clarity_dehaze.spv", CLARITY_DEHAZE_SPV),
+            ("lut3d.spv", LUT3D_SPV),
+            ("chromatic_aberration.spv", CA_SPV),
+            ("scopes.spv", SCOPES_SPV),
+        ] {
+            assert!(bytes.len() > 20, "{name} should be non-empty");
+            assert_eq!(bytes.len() % 4, 0, "{name} length must be a multiple of 4");
+            let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            assert_eq!(magic, 0x0723_0203, "{name} must start with SPIR-V magic number 0x07230203");
+        }
+    }
+
+    #[test]
+    fn gpu_kernels_execute_if_adapter_available() {
+        if detect().is_none() {
+            return;
+        }
+        let w = 32u32;
+        let h = 24u32;
+        let src: Vec<Px> = (0..(w * h))
+            .map(|i| {
+                let f = i as f32 / (w * h) as f32;
+                [f * 0.8, f * 0.5 + 0.1, 1.0 - f * 0.7]
+            })
+            .collect();
+        let cd = run_clarity_dehaze(&src, w, h, 35.0, 25.0, 20.0).expect("clarity_dehaze kernel");
+        assert_eq!(cd.len(), src.len());
+
+        let mut lut = Vec::with_capacity(8 * 8 * 8);
+        for b in 0..8 {
+            for g in 0..8 {
+                for r in 0..8 {
+                    lut.push([r as f32 / 7.0, g as f32 / 7.0, b as f32 / 7.0]);
+                }
+            }
+        }
+        let l3d = run_lut3d(&src, w, h, &lut, 8, 1.0).expect("lut3d kernel");
+        assert_eq!(l3d.len(), src.len());
+
+        let ca = run_chromatic_aberration(&src, w, h, 15.0, -10.0, 0.5).expect("ca kernel");
+        assert_eq!(ca.len(), src.len());
+
+        let mut rgba = vec![128u8; (w * h * 4) as usize];
+        for (i, p) in src.iter().enumerate() {
+            rgba[i * 4] = (p[0] * 255.0) as u8;
+            rgba[i * 4 + 1] = (p[1] * 255.0) as u8;
+            rgba[i * 4 + 2] = (p[2] * 255.0) as u8;
+            rgba[i * 4 + 3] = 255;
+        }
+        let (parade, wf) = run_scopes(&rgba, w, h, 48, 32).expect("scopes kernel");
+        assert_eq!(parade.len(), 48 * 32 * 4);
+        assert_eq!(wf.len(), 48 * 32 * 4);
+    }
 }

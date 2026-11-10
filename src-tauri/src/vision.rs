@@ -55,6 +55,12 @@ pub struct Metrics {
     pub colors: Vec<String>,
     /// Perceptual (DCT) hash of the frame, 16 hex digits.
     pub phash: String,
+    /// Native C++ Tenengrad/Laplacian focus-peaking score (0-100) on the subject/eye region.
+    pub focus_peaking_score: f32,
+    /// Subject eye openness (EAR proxy 0.0-1.0; < 0.22 indicates closed eyes / blink).
+    pub eye_openness: f32,
+    /// True when closed eyes (blink) are detected on a portrait/face subject.
+    pub blink_detected: bool,
 }
 
 /// Display-referred (sRGB-encoded) colour 0-1, row-major: what the analysis looks at.
@@ -345,7 +351,22 @@ pub fn analyse(img: &DynamicImage, edge: u32, judge: u32, subject: Option<[f32; 
     };
     exposure(&small, &mut m);
     colours(&small, &mut m);
+    focus_and_blink(&small, sbox, &mut m);
     m
+}
+
+/// Native C++ Focus-Peaking (Tenengrad + 8-neighbor Laplacian) and Eye-Aspect-Ratio (EAR) blink analysis.
+fn focus_and_blink(s: &Rgb, sbox: [f32; 4], m: &mut Metrics) {
+    if s.w < 8 || s.h < 8 {
+        return;
+    }
+    let flat_rgb: Vec<f32> = s.px.iter().flat_map(|p| [p[0].clamp(0.0, 1.0), p[1].clamp(0.0, 1.0), p[2].clamp(0.0, 1.0)]).collect();
+    let (_mask, fp_score, eye_open, blink) = crate::libraw::focus_peaking_and_blink(&flat_rgb, s.w, s.h, 0.25, &[sbox]);
+    m.focus_peaking_score = fp_score;
+    m.eye_openness = eye_open;
+    // Flag a blink when the subject box contains warm skin/portrait tones and EAR drops below 0.22
+    let has_skin_tones = m.colors.iter().any(|c| c == "orange" || c == "red" || c == "brown" || c == "pink");
+    m.blink_detected = has_skin_tones && (blink || eye_open < 0.22) && m.edges >= 30;
 }
 
 /// Brightness percentiles, clipping and the exposure score, on the display values.
@@ -747,6 +768,23 @@ pub fn subject_outline(s: &Rgb) -> Option<Vec<[f32; 2]>> {
 /// Outline of the sky, or None when there is little or none.
 pub fn sky_outline(s: &Rgb) -> Option<Vec<[f32; 2]>> {
     outline(&sky_region(s)?, s.w, s.h, 160)
+}
+
+/// Generates a 16-bit feathered alpha mask (`0..=65535`) for `subject`, `sky`, or `background`
+/// using the native C++ O(N) He et al. edge-preserving Guided Filter (`ol_guided_feather_mask_16bit`).
+pub fn semantic_mask_16bit(s: &Rgb, target: &str, feather: f32) -> Option<Vec<u16>> {
+    let raw_bool = match target {
+        "subject" => subject_region(s, 0.35)?,
+        "sky" => sky_region(s)?,
+        "background" => subject_region(s, 0.35)?.into_iter().map(|b| !b).collect(),
+        _ => return None,
+    };
+    let raw_alpha: Vec<f32> = raw_bool.into_iter().map(|b| if b { 1.0f32 } else { 0.0f32 }).collect();
+    let guide_luma = s.luma();
+    let radius = ((feather.clamp(0.0, 100.0) * 0.25).round() as i32).max(4);
+    let eps = 1e-3f32;
+    let (a16, _af) = crate::libraw::guided_feather_16bit(&guide_luma, &raw_alpha, s.w, s.h, radius, eps);
+    Some(a16)
 }
 
 #[cfg(test)]

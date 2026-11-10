@@ -317,7 +317,7 @@ impl OnnxBuilder {
 
         let mut model = Vec::new();
         push_int64(&mut model, 1, 8); // ir_version = 8
-        push_str(&mut model, 2, "openlight-studio");
+        push_str(&mut model, 2, "optixel-studio");
         push_bytes(&mut model, 7, &graph);
         push_bytes(&mut model, 8, &opset);
         model
@@ -1019,9 +1019,9 @@ fn estimate_angles_from_fields(
     let confidence = (1.0 - (spread_deg / 8.0).clamp(0.0, 0.6) - (roll_diff / 15.0).clamp(0.0, 0.4))
         .clamp(0.15, 0.99);
 
-    // 3. Refine vertical pitch in OpenLight's Geo camera coordinates using the dense gravity field:
-    // OpenLight's Geo uses virtual focal length `f_ol = FOCAL * max(w, h)`.
-    // True vertical vanishing point distance is `f_true / tan(pitch)`, so for OpenLight's virtual camera:
+    // 3. Refine vertical pitch in Optixel's Geo camera coordinates using the dense gravity field:
+    // Optixel's Geo uses virtual focal length `f_ol = FOCAL * max(w, h)`.
+    // True vertical vanishing point distance is `f_true / tan(pitch)`, so for Optixel's virtual camera:
     // `tan(pitch_ol) = tan(pitch_true) * (f_ol / f_true)`.
     let f_true = 0.5 * fh / (param_vfov_deg.to_radians() * 0.5).tan().max(0.1);
     let f_ol = FOCAL * fw.max(fh);
@@ -1030,7 +1030,7 @@ fn estimate_angles_from_fields(
     let (sr, cr) = roll_rad.sin_cos();
 
     // Also estimate `tan(pitch_ol)` directly from dense gravity field convergence across the left/right halves:
-    // Under OpenLight's camera with roll `r` and pitch `p`, a vertical line through `(u, v)` projects to
+    // Under Optixel's camera with roll `r` and pitch `p`, a vertical line through `(u, v)` projects to
     // unrolled coordinates `u' = u*cr - v*sr`, `v' = u*sr + v*cr`, pointing toward `(0, -f_ol / tan(p))`.
     // Thus at `(u', v')`, the unrolled gravity vector `(gx', gy')` satisfies:
     // `gx' / gy' = u' / (v' + f_ol / tan(p))`  =>  `tan(p) / f_ol = -(gx' / gy') / (u' + v' * (gx' / gy'))`.
@@ -1219,7 +1219,7 @@ mod tests {
 
     #[test]
     fn test_convert_pth_to_onnx_and_run_ort() {
-        let tmp = std::env::temp_dir().join("openlight_perspective_test");
+        let tmp = std::env::temp_dir().join("optixel_perspective_test");
         let _ = fs::remove_dir_all(&tmp);
         let model_dir = tmp.join("models").join("perspective-fields-gsv");
         fs::create_dir_all(&model_dir).unwrap();

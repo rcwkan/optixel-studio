@@ -320,11 +320,14 @@ mod tests {
         assert!((back.0 - 30.0).abs() < 1e-3 && (back.1 - 40.0).abs() < 1e-3);
     }
 
-    /// Needs OPENLIGHT_TEST_AI=1 and OPENLIGHT_TEST_FACES=<source image>,<target image>: downloads the face swap
+    /// Needs OPTIXEL_TEST_AI=1 (or OPENLIGHT_TEST_AI=1) and OPTIXEL_TEST_FACES=<source image>,<target image>: downloads the face swap
     /// models into the app's data folder, swaps, and writes the result next to the target as *_swapped.jpg.
     #[test]
     fn face_swap_end_to_end() {
-        let (Some(_), Ok(paths)) = (std::env::var_os("OPENLIGHT_TEST_AI"), std::env::var("OPENLIGHT_TEST_FACES")) else { return };
+        let (Some(_), Ok(paths)) = (
+            std::env::var_os("OPTIXEL_TEST_AI").or_else(|| std::env::var_os("OPENLIGHT_TEST_AI")),
+            std::env::var("OPTIXEL_TEST_FACES").or_else(|_| std::env::var("OPENLIGHT_TEST_FACES")),
+        ) else { return };
         let (src, dst) = paths.split_once(',').expect("source,target");
         let data = crate::data_dir();
         crate::aimodel::download(&data, "hyperswap-1a", &|d, t| eprint!("\rdownload {d}/{t}")).unwrap();

@@ -1,6 +1,6 @@
 # Chapter 5: RAW Processing Pipeline, Color Science & Mathematics
 
-This chapter explores the mathematical foundations, color spaces, and execution stages of OpenLight Studio's non-destructive image rendering pipeline implemented in [`src-tauri/src/develop.rs`](../src-tauri/src/develop.rs).
+This chapter explores the mathematical foundations, color spaces, and execution stages of Optixel Studio's non-destructive image rendering pipeline implemented in [`src-tauri/src/develop.rs`](../src-tauri/src/develop.rs).
 
 ---
 
@@ -112,7 +112,7 @@ flowchart TD
 
 ## 3. Proxy Rendering vs. Full-Resolution Export
 
-To maintain 60fps interactivity during slider adjustments on commodity CPUs, OpenLight Studio separates the interactive viewport from export rendering:
+To maintain 60fps interactivity during slider adjustments on commodity CPUs, Optixel Studio separates the interactive viewport from export rendering:
 
 | Attribute | Viewport Develop Proxy | Batch Export Renderer |
 |---|---|---|
@@ -146,3 +146,31 @@ The profiles follow the looks that are common on Unsplash for each kind of photo
 | B&W | — | contrast + | Monochrome | clarity + |
 
 Unmatched photos get *Natural*. The keyword lists live in `auto::TYPES`; `photo_types_map_to_profiles` checks the mapping.
+
+---
+
+## 5. Native C/C++ Acceleration & Color Science Extensions
+
+To achieve studio-grade parity with professional RAW developers, Optixel Studio links native C/C++ engines alongside the Rust pipeline:
+
+### A. LibRaw C++ & Multi-Algorithm Demosaicing
+* **Proprietary Sensor Arrays**: Native parsing for Canon `.CR3`, Nikon High-Efficiency `.NEF`, Sony lossless `.ARW`, and Fujifilm X-Trans non-Bayer color filter arrays (`src-tauri/csrc/ol_raw.cpp`).
+* **Multi-Algorithm Demosaic Selector**:
+  * **RCD**: Ratio Corrected Demosaicing for maximum structural edge acuity.
+  * **AMaZE**: Directional interpolation suppressing zipper and maze artifacts in low-ISO landscapes.
+  * **LMMSE**: High-ISO noise-adaptive interpolation preserving micro-textures in astrophotography and low-light portraits.
+* **Optical Black-Level & Multi-Channel Highlight Recovery**: Directly reads optical calibration black points from masked sensor margins and executes highlight reconstruction across saturated channels prior to tonemapping.
+
+### B. LittleCMS 2 Studio Color Management & Soft-Proofing
+* **Working Color Spaces**: 32-bit floating-point **ProPhoto RGB** and **ACEScg** color space transforms implemented via static LittleCMS 2 (`src-tauri/src/icc.rs`).
+* **Interactive Printer Soft-Proofing**: Simulates physical paper/ink black-point compensation using custom `.icc` profiles, highlighting unprintable out-of-gamut pixels with high-visibility neon overlays.
+* **JPEG XL XYB Fidelity**: Pairs `jxl-oxide` with LittleCMS 2 (`jxlcms`) to support perceptual XYB color decoding and HDR PQ/HLG transfer curves.
+
+### C. Ahead-of-Time (AOT) GPU Compute Shader Pipeline
+* **Build-Time SPIR-V Bytecode**: Naga validates and compiles `src-tauri/shaders/*.wgsl` into stripped binary SPIR-V bytecode embedded directly into the Rust executable.
+* **Real-Time GPU Compute Kernels**: Dispatches high-throughput GPU kernels for Local Clarity/Texture/Dehaze, 3D LUT trilinear interpolation, lateral and axial chromatic aberration defringing, and 60 FPS RGB Parade and Waveform scopes (`src-tauri/src/gpu.rs`).
+
+### D. Lossless SIMD DCT Transforms & Adobe XMP Sync
+* **libjpeg-turbo**: Lossless 90°/180°/270° rotation, flipping, and cropping executed directly in DCT frequency space without recompressing or degrading JPEG image quality.
+* **MakerNotes AF Point Overlay (<kbd>A</kbd>)**: Decodes vendor-specific MakerNotes to overlay active autofocus points and eye-AF bounding boxes during culling.
+* **Bidirectional Lightroom `.XMP` Sync**: Parses and writes Adobe XMP sidecars to synchronize ratings, color labels, crop rectangles, and IPTC copyright tags with Lightroom Classic (`src-tauri/src/xmp.rs`).

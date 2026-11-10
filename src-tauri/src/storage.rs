@@ -521,7 +521,7 @@ pub fn connect_drive(core: &Core, id: &str) -> Result<String, String> {
     let path = PathBuf::from(&d.path);
     if !path.is_dir() {
         if d.url.is_empty() {
-            return Err(format!("{} is not connected: connect the share, or add its address so OpenLight can connect it", d.path));
+            return Err(format!("{} is not connected: connect the share, or add its address so Optixel can connect it", d.path));
         }
         connect_share(&d.url, &path)?;
     }
@@ -896,7 +896,7 @@ pub fn duplicate(core: &Arc<Core>, from: &Place, to: &Place, o: &DuplicateOption
         }
         Place::Photos { .. } => return Err("catalog photos can't be a destination: choose a folder or a service".into()),
     };
-    let tmp = std::env::temp_dir().join(format!("openlight-duplicate-{}", crate::new_token()));
+    let tmp = std::env::temp_dir().join(format!("optixel-duplicate-{}", crate::new_token()));
     fs::create_dir_all(&tmp).map_err(es)?;
     let (mut copied, mut skipped, mut bytes, mut errors, mut written) = (0, 0, 0u64, vec![], vec![]);
     for (k, it) in todo.iter().enumerate() {
@@ -976,7 +976,7 @@ pub(crate) fn canonicalize_or_parent(p: &Path) -> PathBuf {
     }
 }
 
-/// Validate a target folder for relocating OpenLight storage.
+/// Validate a target folder for relocating Optixel storage.
 pub fn validate_location(core: &Core, target: &str) -> Result<Value, String> {
     let target_str = target.trim();
     if target_str.is_empty() {
@@ -1003,14 +1003,14 @@ pub fn validate_location(core: &Core, target: &str) -> Result<Value, String> {
     if norm_target.starts_with(&norm_current) {
         return Ok(json!({
             "valid": false,
-            "error": "Target folder cannot be inside the current OpenLight storage directory."
+            "error": "Target folder cannot be inside the current Optixel storage directory."
         }));
     }
 
     if norm_current.starts_with(&norm_target) {
         return Ok(json!({
             "valid": false,
-            "error": "Current OpenLight storage directory cannot be inside the target folder."
+            "error": "Current Optixel storage directory cannot be inside the target folder."
         }));
     }
 

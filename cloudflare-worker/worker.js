@@ -1,16 +1,16 @@
 /**
- * Cloudflare Worker: makecade-openlight-router
- * Router & Edge Proxy for OpenLight Studio (https://openlight.makecade.com)
+ * Cloudflare Worker: makecade-optixel-router
+ * Router & Edge Proxy for Optixel Studio (https://optixel.makecade.com)
  *
  * Responsibilities:
- * - Proxies static assets & HTML to Cloudflare Pages origin (openlight-studio.pages.dev)
+ * - Proxies static assets & HTML to Cloudflare Pages origin (optixel-studio.pages.dev)
  * - Single Page Application (SPA) routing fallback for deep URLs
  * - High-performance edge caching for assets (/icon.png, /assets/*)
  * - Security headers enforcement
  * - Health check endpoint (/__health)
  */
 
-const DEFAULT_PAGES_ORIGIN = 'https://openlight-studio.pages.dev';
+const DEFAULT_PAGES_ORIGIN = 'https://optixel-studio.pages.dev';
 
 export default {
   async fetch(request, env, ctx) {
@@ -24,8 +24,8 @@ export default {
         JSON.stringify(
           {
             status: 'ok',
-            service: 'makecade-openlight-router',
-            targetDomain: 'openlight.makecade.com',
+            service: 'makecade-optixel-router',
+            targetDomain: 'optixel.makecade.com',
             pagesOrigin,
             timestamp: new Date().toISOString(),
           },
@@ -96,7 +96,7 @@ export default {
         headers: responseHeaders,
       });
     } catch (err) {
-      return new Response(`Error proxying to OpenLight Studio Pages origin: ${err.message}`, {
+      return new Response(`Error proxying to Optixel Studio Pages origin: ${err.message}`, {
         status: 502,
         headers: { 'Content-Type': 'text/plain' },
       });

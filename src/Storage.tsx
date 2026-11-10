@@ -34,7 +34,7 @@ const PRESETS: Record<"webdav" | "s3", Preset[]> = {
     { name: "MinIO", endpoint: "http://YOUR-SERVER:9000", region: "us-east-1", note: "The access key of a user allowed to read and write the bucket." },
   ],
 };
-/** What OpenLight opens (develop::RAW_EXTS and IMG_EXTS) */
+/** What Optixel opens (develop::RAW_EXTS and IMG_EXTS) */
 const PHOTO = /\.(jpe?g|png|tiff?|webp|dng|cr[23w]|nef|nrw|arw|sr[f2]|raf|orf|rw[2l]|pef|srw|3fr|iiq|erf|mef|mos|kdc|dcr)$/i;
 
 /** Run one action at a time: `busy` says what is going on, a failure lands in `error`. */
@@ -190,7 +190,7 @@ function NetworkDrives({ settings, setSettings }: { settings: Settings; setSetti
       <div className="mt-2 flex items-start justify-between gap-3">
         <p className={hint}>
           smb:// for Windows, Samba and most NAS · afp:// for older Macs · nfs:// · https:// for WebDAV. A share connected some other way (a mapped drive) needs only its folder. Your system asks for
-          the password and remembers it; OpenLight never sees it.
+          the password and remembers it; Optixel never sees it.
         </p>
         <Btn
           active
@@ -372,7 +372,7 @@ function CloudStorage({ settings, setSettings }: { settings: Settings; setSettin
             : kind === "onedrive"
               ? "Register an app at entra.microsoft.com for personal and work accounts, add the platform Mobile and desktop applications with the redirect URI http://localhost and the delegated permissions Files.ReadWrite and offline_access, and paste its Application (client) ID. Signing in opens your browser."
               : pre?.note}{" "}
-          Passwords and sign-ins are kept with OpenLight's other keys, never in its settings file.
+          Passwords and sign-ins are kept with Optixel's other keys, never in its settings file.
         </p>
         <span className="flex shrink-0 gap-1">
           {started && (

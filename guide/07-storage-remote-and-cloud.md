@@ -1,15 +1,15 @@
 # Chapter 7: Storage Architecture, Remote Sources & Cloud Sync
 
-This chapter documents OpenLight Studio's storage architecture, in-place local editing, network share mounting, Immich integration, Google Photos Picker API, and multi-cloud synchronization implemented in [`src-tauri/src/storage.rs`](../src-tauri/src/storage.rs), [`src-tauri/src/cloud.rs`](../src-tauri/src/cloud.rs), and [`src-tauri/src/remote.rs`](../src-tauri/src/remote.rs).
+This chapter documents Optixel Studio's storage architecture, in-place local editing, network share mounting, Immich integration, Google Photos Picker API, and multi-cloud synchronization implemented in [`src-tauri/src/storage.rs`](../src-tauri/src/storage.rs), [`src-tauri/src/cloud.rs`](../src-tauri/src/cloud.rs), and [`src-tauri/src/remote.rs`](../src-tauri/src/remote.rs).
 
 ---
 
 ## 1. Storage Architecture & Location Strategy
 
-OpenLight Studio implements a strictly **non-destructive, local-first storage model**:
+Optixel Studio implements a strictly **non-destructive, local-first storage model**:
 1. **Zero Mandatory Ingestion**: Local and network folders are browsed in-place. Media files are never renamed, converted, or copied to an opaque library bundle.
 2. **Sidecar Synchronization**: Edit recipes, star ratings, flags, and color labels are saved both to SQLite (`catalog.olcat`) and synced to standard `.olxmp` sidecar files in the same directory as the original file.
-3. **On-Demand Remote Caching**: Remote cloud assets and Immich originals are downloaded only when opened for develop or export, stored under `<OPENLIGHT_DATA_DIR>/remote/`.
+3. **On-Demand Remote Caching**: Remote cloud assets and Immich originals are downloaded only when opened for develop or export, stored under `<OPTIXEL_DATA_DIR>/remote/`.
 
 ---
 
@@ -33,11 +33,11 @@ Network shares allow studios and teams to edit photos stored on central NAS syst
 
 ## 3. Immich Integration ([`remote.rs`](../src-tauri/src/remote.rs))
 
-OpenLight Studio features first-class integration with [Immich](https://immich.app), the popular self-hosted photo management server:
+Optixel Studio features first-class integration with [Immich](https://immich.app), the popular self-hosted photo management server:
 
 ```
 +---------------------------+                      +---------------------------+
-|    OpenLight Studio       |                      |       Immich Server       |
+|    Optixel Studio       |                      |       Immich Server       |
 |  - Star Ratings (1-5)     | <==================> |  - Asset Rating (1-5)     |
 |  - Pick Flag (P)          | <==================> |  - Favorite (true/false)  |
 |  - Reject Flag (X)        | <==================> |  - Archive / Rejected     |
@@ -46,12 +46,12 @@ OpenLight Studio features first-class integration with [Immich](https://immich.a
 ```
 
 ### 3.1 Lazy Streaming & Pagination
-* Rather than downloading the entire library on startup, OpenLight streams Immich album contents **250 photos per page**.
+* Rather than downloading the entire library on startup, Optixel streams Immich album contents **250 photos per page**.
 * When browsing, thumbnail renditions are fetched directly from the Immich server's fast preview endpoints.
-* Opening a photo in Develop automatically downloads the original RAW/HEIC into `<OPENLIGHT_DATA_DIR>/remote/Immich/originals/`.
+* Opening a photo in Develop automatically downloads the original RAW/HEIC into `<OPTIXEL_DATA_DIR>/remote/Immich/originals/`.
 
 ### 3.2 Bi-Directional Metadata Sync
-* Updating a rating or flag in OpenLight immediately dispatches an async HTTP `PUT /api/assets/{id}` to the Immich server.
+* Updating a rating or flag in Optixel immediately dispatches an async HTTP `PUT /api/assets/{id}` to the Immich server.
 * Re-opening an album pulls latest ratings from Immich, resolving conflicts in favor of recent timestamps.
 
 ### 3.3 Stacked Edits
@@ -61,18 +61,18 @@ OpenLight Studio features first-class integration with [Immich](https://immich.a
 
 ## 4. Google Photos Integration
 
-Due to Google Photos API restrictions that disallow full library listing or modification of existing photos, OpenLight implements the modern **Google Photos Picker API**:
+Due to Google Photos API restrictions that disallow full library listing or modification of existing photos, Optixel implements the modern **Google Photos Picker API**:
 
 1. **OAuth 2.0 PKCE Flow**: The user signs in via a local browser loopback callback (`http://localhost`).
 2. **Picking Session**: **Pick photos…** opens Google's native picker web UI.
-3. **Downloading Picks**: Selected photos download into `<OPENLIGHT_DATA_DIR>/remote/Cloud/GooglePhotos/` and appear under *Picked photos*.
+3. **Downloading Picks**: Selected photos download into `<OPTIXEL_DATA_DIR>/remote/Cloud/GooglePhotos/` and appear under *Picked photos*.
 4. **Export Uploads**: Edited photos are uploaded via the Google Photos Library API as new assets with original EXIF capture timestamps preserved.
 
 ---
 
 ## 5. Multi-Cloud Storage ([`cloud.rs`](../src-tauri/src/cloud.rs))
 
-OpenLight Studio supports direct connection to four primary cloud storage backends:
+Optixel Studio supports direct connection to four primary cloud storage backends:
 
 | Backend | Protocol & Authentication | Features |
 |---|---|---|

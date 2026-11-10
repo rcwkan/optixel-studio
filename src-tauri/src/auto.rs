@@ -67,6 +67,8 @@ pub struct CullSettings {
     pub ai_keywords: bool,
     /// Leave photos that already have a rating, flag or label alone.
     pub keep_manual: bool,
+    /// Reject portrait/subject photos where closed eyes (blink) are detected.
+    pub reject_blinks: bool,
 }
 impl Default for CullSettings {
     fn default() -> Self {
@@ -86,6 +88,7 @@ impl Default for CullSettings {
             keywords: true,
             ai_keywords: false,
             keep_manual: true,
+            reject_blinks: true,
         }
     }
 }
@@ -182,7 +185,7 @@ pub struct EnhanceSettings {
     pub remove_prompt: String,
     /// auto (32-bit float for RAW files, else 16-bit) | float | tiff16
     pub format: String,
-    /// Where the new files go; empty: next to the original (Pictures/OpenLight Enhanced for remote photos).
+    /// Where the new files go; empty: next to the original (Pictures/Optixel Enhanced for remote photos).
     pub folder: String,
     /// The new photo starts with the original's edits, rating and keywords.
     pub copy_edits: bool,
@@ -225,7 +228,7 @@ pub struct HdrSettings {
     pub deghost: String,
     /// The new photo starts with auto white balance, tone and HDR toning (Merge exposures, fitted to its range).
     pub auto_tone: bool,
-    /// Where the new files go; empty: next to the photos (Pictures/OpenLight Enhanced for remote ones).
+    /// Where the new files go; empty: next to the photos (Pictures/Optixel Enhanced for remote ones).
     pub folder: String,
 }
 impl Default for HdrSettings {
@@ -699,6 +702,9 @@ pub fn cull(core: &Arc<Core>, ids: &[i64], s: &CullSettings, provider: &str, job
                 reasons[i].push("crushed shadows".into());
             }
         }
+        if s.reject_blinks && m.blink_detected {
+            reasons[i].push("closed eyes".into());
+        }
     }
     let best: HashMap<usize, usize> = members
         .iter()
@@ -778,7 +784,9 @@ pub fn cull(core: &Arc<Core>, ids: &[i64], s: &CullSettings, provider: &str, job
         }
         rows.push(json!({
             "id": p.id, "file": file_name(p), "quality": q[i].round(), "sharpness": m.sharpness.round(),
-            "subject_sharpness": m.subject_sharpness.round(), "exposure": m.exposure.round(), "noise": (m.noise * 10.0).round() / 10.0,
+            "subject_sharpness": m.subject_sharpness.round(), "focus_peaking": m.focus_peaking_score.round(),
+            "eye_openness": (m.eye_openness * 100.0).round(), "blink": m.blink_detected,
+            "exposure": m.exposure.round(), "noise": (m.noise * 10.0).round() / 10.0,
             "motion": (m.motion * 100.0).round(), "burst": in_burst.then_some(group.len()), "best": is_best,
             "flag": u.flag, "rating": u.rating, "label": u.color_label, "reasons": why, "keywords": tags,
             "kept": s.keep_manual && manual,
@@ -1042,7 +1050,19 @@ fn blend(from: &Develop, to: &Develop, t: f32) -> Develop {
     }
     fn mix(a: &Value, b: &Value, t: f64) -> Value {
         match (a, b) {
-            (Value::Number(x), Value::Number(y)) => json!(x.as_f64().unwrap_or(0.0) * (1.0 - t) + y.as_f64().unwrap_or(0.0) * t),
+            (Value::Number(x), Value::Number(y)) => {
+                if x.is_i64() && y.is_i64() {
+                    let xi = x.as_i64().unwrap_or(0) as f64;
+                    let yi = y.as_i64().unwrap_or(0) as f64;
+                    json!((xi * (1.0 - t) + yi * t).round() as i64)
+                } else if x.is_u64() && y.is_u64() {
+                    let xi = x.as_u64().unwrap_or(0) as f64;
+                    let yi = y.as_u64().unwrap_or(0) as f64;
+                    json!((xi * (1.0 - t) + yi * t).round() as u64)
+                } else {
+                    json!(x.as_f64().unwrap_or(0.0) * (1.0 - t) + y.as_f64().unwrap_or(0.0) * t)
+                }
+            }
             (Value::Object(x), Value::Object(y)) => Value::Object(y.iter().map(|(k, v)| (k.clone(), x.get(k).map_or(v.clone(), |u| mix(u, v, t)))).collect()),
             (Value::Array(x), Value::Array(y)) if x.len() == y.len() => Value::Array(x.iter().zip(y).map(|(u, v)| mix(u, v, t)).collect()),
             _ => if t >= 0.5 { b.clone() } else { a.clone() },
@@ -1298,7 +1318,7 @@ fn enhanced_path(dir: &Path, p: &Photo, suffix: &str) -> PathBuf {
 }
 
 /// Where Enhance and HDR Merge write: `folder`, else next to a local original if that folder is writable,
-/// else Pictures/OpenLight Enhanced.
+/// else Pictures/Optixel Enhanced.
 fn enhanced_dir(folder: &str, p: &Photo) -> Result<PathBuf, String> {
     let dir = if !folder.trim().is_empty() {
         PathBuf::from(folder.trim())
@@ -1306,7 +1326,7 @@ fn enhanced_dir(folder: &str, p: &Photo) -> Result<PathBuf, String> {
         let next_to = Path::new(&p.path).parent().filter(|d| remote::immich_id(&p.path).is_none() && d.is_dir());
         match next_to.filter(|d| fs::metadata(d).is_ok_and(|m| !m.permissions().readonly())) {
             Some(d) => d.to_path_buf(),
-            None => dirs::picture_dir().or_else(dirs::home_dir).unwrap_or_else(std::env::temp_dir).join("OpenLight Enhanced"),
+            None => dirs::picture_dir().or_else(dirs::home_dir).unwrap_or_else(std::env::temp_dir).join("Optixel Enhanced"),
         }
     };
     fs::create_dir_all(&dir).map_err(|e| format!("cannot write to {}: {e}", dir.display()))?;
@@ -1363,7 +1383,7 @@ pub fn enhance(core: &Arc<Core>, ids: &[i64], s: &EnhanceSettings, job: &Job) ->
             let scale = if s.super_resolution { s.scale.clamp(1.0, 4.0).min(fit).max(1.0) } else { 1.0 };
             let scaled = scale > 1.01;
             let img = if s.engine == "command" {
-                let dir = std::env::temp_dir().join(format!("openlight-enhance-{}", crate::new_token()));
+                let dir = std::env::temp_dir().join(format!("optixel-enhance-{}", crate::new_token()));
                 fs::create_dir_all(&dir).map_err(es)?;
                 let (input, output) = (dir.join("input.png"), dir.join("output.png"));
                 let r = develop::export(&img, &input, "PNG_16", "sRGB", 100, None)

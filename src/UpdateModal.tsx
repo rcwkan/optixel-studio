@@ -82,7 +82,7 @@ export function UpdateModal({
   };
 
   const handleOpenGitHub = () => {
-    const url = info?.html_url || "https://github.com/rcwkan/openlight-studio/releases";
+    const url = info?.html_url || "https://github.com/rcwkan/optixel-studio/releases";
     api.openExternalUrl(url).catch(() => window.open(url, "_blank"));
   };
 
@@ -116,7 +116,7 @@ export function UpdateModal({
             </span>
             <div>
               <h2 className="text-sm font-semibold text-white">Software Update</h2>
-              <p className="text-[11px] text-neutral-400">OpenLight Studio Release Channel</p>
+              <p className="text-[11px] text-neutral-400">Optixel Studio Release Channel</p>
             </div>
           </div>
           <button
@@ -134,7 +134,7 @@ export function UpdateModal({
             <div className="flex flex-col items-center justify-center py-10 space-y-3">
               <div className="h-8 w-8 animate-spin rounded-full border-2 border-neutral-600 border-t-[var(--theme-accent,#0ea5e9)]" />
               <p className="text-neutral-300 font-medium">Checking for latest release from GitHub…</p>
-              <p className="text-[11px] text-neutral-500">https://github.com/rcwkan/openlight-studio/releases</p>
+              <p className="text-[11px] text-neutral-500">https://github.com/rcwkan/optixel-studio/releases</p>
             </div>
           )}
 
@@ -198,7 +198,7 @@ export function UpdateModal({
                       ✓
                     </div>
                     <div>
-                      <h3 className="font-semibold text-emerald-300">OpenLight Studio is up to date</h3>
+                      <h3 className="font-semibold text-emerald-300">Optixel Studio is up to date</h3>
                       <p className="text-neutral-400 text-[11px] mt-0.5">
                         You are running version <span className="text-neutral-200 font-medium">{info.current_version}</span>, which is the latest available release.
                       </p>

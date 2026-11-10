@@ -1,12 +1,12 @@
 # Chapter 2: System Architecture & Dual-Mode Runtime
 
-This chapter details the high-level architecture of OpenLight Studio, its execution modes, the IPC bridge between the frontend and backend, state ownership, and its concurrency model.
+This chapter details the high-level architecture of Optixel Studio, its execution modes, the IPC bridge between the frontend and backend, state ownership, and its concurrency model.
 
 ---
 
 ## 1. High-Level Architectural Flow
 
-OpenLight Studio separates user interface presentation, native system integration, and raw image processing into clean, isolated tiers:
+Optixel Studio separates user interface presentation, native system integration, and raw image processing into clean, isolated tiers:
 
 ```mermaid
 flowchart TD
@@ -66,26 +66,26 @@ flowchart TD
 
 ## 2. Multi-Mode Application Runtime
 
-OpenLight Studio is packaged as a single native binary that adapts its execution path depending on command-line arguments:
+Optixel Studio is packaged as a single native binary that adapts its execution path depending on command-line arguments:
 
-### Mode A: Full Desktop GUI Application (`openlight-studio`)
+### Mode A: Full Desktop GUI Application (`optixel-studio`)
 * Default launch mode when launched from Finder, application menus, or CLI without arguments.
 * Initializes Tauri v2 desktop shell, creates the native application window (1280x800 default), registers system menus, and mounts the React 19 UI.
 * Starts the in-process **Streamable HTTP MCP Server** on loopback `http://127.0.0.1:41920/mcp` with bearer authentication.
 * Serves the `asset://` custom protocol to stream thumbnails and local photos securely into the WebView without CORS restrictions.
 
-### Mode B: Headless CLI Folder Importer (`openlight-studio --import <folder>`)
+### Mode B: Headless CLI Folder Importer (`optixel-studio --import <folder>`)
 * Executes without initializing GUI windows or WebViews.
 * Recursively scans `<folder>` for supported RAW and bitmap formats (DNG, CR2, CR3, NEF, ARW, RAF, RW2, ORF, PEF, JPEG, TIFF, PNG, AVIF, HEIC).
 * Extracts EXIF metadata, creates `.olcat` records, and generates cached thumbnails under `thumbs/`.
 * Exits immediately upon completion with status code `0`, ideal for automated ingestion scripts and ingest hooks.
 
-### Mode C: Headless or Forwarded MCP Stdio Server (`openlight-studio --mcp-stdio`)
+### Mode C: Headless or Forwarded MCP Stdio Server (`optixel-studio --mcp-stdio`)
 * Provides a standard Model Context Protocol interface over `stdin` / `stdout`.
 * **Smart Forwarding**:
-  1. Checks if a GUI instance of OpenLight Studio is currently running on `http://127.0.0.1:41920`.
+  1. Checks if a GUI instance of Optixel Studio is currently running on `http://127.0.0.1:41920`.
   2. If running, forwards incoming JSON-RPC 2.0 messages directly to the active GUI app over HTTP, updating the user's open Develop canvas in real-time.
-  3. If no GUI app is running, initializes a headless `Core` instance against `<OPENLIGHT_DATA_DIR>/catalog.olcat` and performs catalog edits and exports in headless mode.
+  3. If no GUI app is running, initializes a headless `Core` instance against `<OPTIXEL_DATA_DIR>/catalog.olcat` and performs catalog edits and exports in headless mode.
 
 ---
 
@@ -132,7 +132,7 @@ Long-running asynchronous jobs (such as the 6 Auto functions in `auto.rs` or clo
 * **`catalog-changed`**: Emitted when external operations (e.g. MCP tool mutations) modify ratings or settings, instructing the UI to refresh without a full reload.
 
 ### 3.3 The Asset Streaming Protocol
-To display multi-gigabyte RAW image files and hundreds of cached thumbnails smoothly without base64 serialization overhead, OpenLight Studio leverages Tauri's custom asset protocol:
+To display multi-gigabyte RAW image files and hundreds of cached thumbnails smoothly without base64 serialization overhead, Optixel Studio leverages Tauri's custom asset protocol:
 
 ```typescript
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -151,7 +151,7 @@ The entire backend engine state is consolidated inside the `Core` struct, manage
 
 ```rust
 pub struct Core {
-    pub dir: PathBuf,                     // Root OPENLIGHT_DATA_DIR
+    pub dir: PathBuf,                     // Root OPTIXEL_DATA_DIR
     pub db: Mutex<rusqlite::Connection>,  // SQLite connection with WAL mode
     pub settings: Mutex<Settings>,        // App settings, active providers, cloud accounts
     pub cancel_tokens: Mutex<HashMap<String, Arc<AtomicBool>>>, // Cancellable auto jobs
@@ -170,7 +170,7 @@ PRAGMA busy_timeout=5000;
 * **Crash Resilience**: Atomic commits guarantee that unexpected process termination leaves `.olcat` in a consistent state.
 
 ### 4.3 Rayon Parallelism for Pixel Processing
-Tonal math, 3D Point Color lookup, bilateral filtering, and image encoding are computationally heavy. OpenLight Studio avoids blocking the main event loop by using **Rayon** for data-parallel iteration:
+Tonal math, 3D Point Color lookup, bilateral filtering, and image encoding are computationally heavy. Optixel Studio avoids blocking the main event loop by using **Rayon** for data-parallel iteration:
 
 ```rust
 // Parallel pixel processing across CPU cores

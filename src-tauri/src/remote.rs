@@ -287,7 +287,7 @@ fn push_to_immich(core: &Core, ids: &[i64], creds: impl FnOnce() -> Result<(Stri
 }
 
 /// The file an `immich://<id>` photo edits from, downloaded once: the original, or for
-/// formats OpenLight can't decode (HEIC…) Immich's full-size JPEG/WebP rendition.
+/// formats Optixel can't decode (HEIC…) Immich's full-size JPEG/WebP rendition.
 pub fn immich_original(core: &Core, id: &str) -> Result<PathBuf, String> {
     original_from_immich(core, id, || immich(core))
 }
@@ -341,7 +341,7 @@ fn original_from_immich(core: &Core, id: &str, creds: impl FnOnce() -> Result<(S
     let (url, key) = creds()?;
     let what = if save_ext(&it.name, "").is_some() { "original" } else { "thumbnail?size=fullsize" };
     it.url = format!("{url}/api/assets/{id}/{what}");
-    download(&agent(), &it, ("x-api-key", &key), &dir, &stem)?.ok_or_else(|| format!("{}: Immich sent a format OpenLight can't open", it.name))
+    download(&agent(), &it, ("x-api-key", &key), &dir, &stem)?.ok_or_else(|| format!("{}: Immich sent a format Optixel can't open", it.name))
 }
 
 // ---------------------------------------------------------------------------
@@ -426,7 +426,7 @@ pub(crate) fn wait_for_code(server: &tiny_http::Server, state: &str, service: &s
             (Some(code), _) => Ok(code.clone()),
             (_, err) => Err(format!("{service} sign-in failed: {}", err.map_or("no code returned", String::as_str))),
         };
-        let page = if res.is_ok() { format!("OpenLight Studio is connected to {service}.") } else { format!("{service} sign-in did not complete.") };
+        let page = if res.is_ok() { format!("Optixel Studio is connected to {service}.") } else { format!("{service} sign-in did not complete.") };
         let ct = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/plain; charset=utf-8"[..]).expect("static header");
         let nosniff = tiny_http::Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).expect("static header");
         let _ = req.respond(
@@ -521,9 +521,9 @@ fn copy_to_service_export(base_path: &Path, default_dest: &Path, file: &str) -> 
     let export_dir = if base_path.as_os_str().is_empty() {
         default_dest.to_path_buf()
     } else if base_path.is_dir() {
-        base_path.join("OpenLight Exports")
+        base_path.join("Optixel Exports")
     } else {
-        base_path.parent().map(|p| p.join("OpenLight Exports")).unwrap_or_else(|| default_dest.to_path_buf())
+        base_path.parent().map(|p| p.join("Optixel Exports")).unwrap_or_else(|| default_dest.to_path_buf())
     };
     fs::create_dir_all(&export_dir).map_err(es)?;
     let dest_file = export_dir.join(&name);
@@ -823,9 +823,9 @@ pub(crate) const UPLOAD_ROW: &str = "SELECT path, COALESCE(strftime('%Y-%m-%dT%H
 /// "duplicate" when Immich already has these exact bytes.
 pub(crate) fn immich_post(agent: &ureq::Agent, url: &str, key: &str, file: &Path, taken: &str) -> Result<Value, String> {
     let name = file_name(&file.to_string_lossy());
-    let device_asset_id = format!("openlight-{}", crate::new_token());
+    let device_asset_id = format!("optixel-{}", crate::new_token());
     // deviceAssetId/deviceId are required before Immich 3 and ignored after.
-    let fields = [("deviceAssetId", device_asset_id.as_str()), ("deviceId", "openlight-studio"), ("fileCreatedAt", taken), ("fileModifiedAt", taken)];
+    let fields = [("deviceAssetId", device_asset_id.as_str()), ("deviceId", "optixel-studio"), ("fileCreatedAt", taken), ("fileModifiedAt", taken)];
     let (content_type, body) = multipart(&fields, &name, &fs::read(file).map_err(es)?);
     let reply = agent.post(&format!("{url}/api/assets")).header("x-api-key", key).header("content-type", &content_type).send(&body[..]);
     json_of("Immich", reply) // 201 created, or 200 when Immich already has these exact bytes
@@ -850,7 +850,7 @@ fn immich_upload(core: &Core, agent: &ureq::Agent, url: &str, key: &str, id: i64
 /// `multipart/form-data`: text fields, then the file as `assetData`. Export names are
 /// already free of quotes and control characters.
 fn multipart(fields: &[(&str, &str)], file_name: &str, data: &[u8]) -> (String, Vec<u8>) {
-    let b = format!("openlight{}", crate::new_token());
+    let b = format!("optixel{}", crate::new_token());
     let mut body = vec![];
     for (k, v) in fields {
         body.extend_from_slice(format!("--{b}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n").as_bytes());
@@ -929,7 +929,7 @@ fn local_stem(it: &Item) -> String {
     format!("{stem}_{}", &id[id.len().saturating_sub(8)..])
 }
 
-/// Extension to store a download under, None when OpenLight can't decode it. The remote
+/// Extension to store a download under, None when Optixel can't decode it. The remote
 /// name decides, unless the server sends a plain image type for a name we can't read as
 /// one (Google may serve a JPEG of a HEIC or RAW original).
 fn save_ext(name: &str, content_type: &str) -> Option<String> {
@@ -941,6 +941,9 @@ fn save_ext(name: &str, content_type: &str) -> Option<String> {
         "image/tiff" => Some("tif"),
         _ => None,
     };
+    if named == "heic" || named == "heif" {
+        return served.map(String::from);
+    }
     let raw = develop::RAW_EXTS.contains(&named.as_str()) && matches!(served, None | Some("tif")); // DNG and most RAWs are TIFF containers
     if raw || develop::IMG_EXTS.contains(&named.as_str()) { Some(named) } else { served.map(String::from) }
 }

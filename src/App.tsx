@@ -804,7 +804,7 @@ export default function App() {
           <div className="absolute inset-0 rounded-3xl bg-cyan-500/10 blur-xl animate-pulse" />
           <img
             src="/icon.png"
-            alt="OpenLight Studio"
+            alt="Optixel Studio"
             className="h-10 w-10 rounded-xl object-cover shadow-lg relative z-10"
           />
           <svg className="absolute -inset-1.5 h-23 w-23 animate-spin text-cyan-400" viewBox="0 0 24 24" fill="none">
@@ -812,7 +812,7 @@ export default function App() {
             <path className="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z" />
           </svg>
         </div>
-        <h1 className="text-lg font-semibold tracking-tight text-white mb-1.5">OpenLight Studio</h1>
+        <h1 className="text-lg font-semibold tracking-tight text-white mb-1.5">Optixel Studio</h1>
         <div className="flex items-center gap-2 text-xs text-neutral-400 font-mono mb-4">
           <span className="inline-block h-1.5 w-1.5 rounded-full bg-cyan-400 animate-ping" />
           <span>Starting 32-bit floating-point engine &amp; catalog…</span>
@@ -830,11 +830,11 @@ export default function App() {
         <span className="font-semibold tracking-wide text-neutral-100 flex items-center gap-2">
           <img
             src="/icon.png"
-            alt="OpenLight Studio"
+            alt="Optixel Studio"
             className="h-5 w-5 rounded object-cover shadow-xs"
           />
           <span>
-            OpenLight <span className="font-normal text-neutral-400">Studio</span>
+            Optixel <span className="font-normal text-neutral-400">Studio</span>
           </span>
         </span>
         <nav className="flex gap-1">
@@ -931,7 +931,7 @@ export default function App() {
             type="button"
             onClick={() => setShowUpdateModal(true)}
             className="flex items-center gap-1.5 rounded-full border border-[var(--theme-accent,#0ea5e9)]/40 bg-[var(--theme-accent,#0ea5e9)]/20 px-2.5 py-0.5 text-[11px] font-semibold text-[var(--theme-accent,#0ea5e9)] hover:bg-[var(--theme-accent,#0ea5e9)]/30 transition-all cursor-pointer shadow-xs"
-            title={`OpenLight Studio update ${updateInfo.release_tag} is available! Click to review and download.`}
+            title={`Optixel Studio update ${updateInfo.release_tag} is available! Click to review and download.`}
           >
             <span className="animate-pulse">✨</span>
             <span>Update {updateInfo.release_tag}</span>

@@ -4,15 +4,20 @@ use std::{
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::Mutex,
     time::Duration,
 };
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
+use tauri_plugin_updater::UpdaterExt;
 
 #[allow(dead_code)]
-pub const GITHUB_REPO: &str = "rcwkan/openlight-studio";
-pub const RELEASES_API_URL: &str = "https://api.github.com/repos/rcwkan/openlight-studio/releases/latest";
-#[allow(dead_code)]
-pub const RELEASES_WEB_URL: &str = "https://github.com/rcwkan/openlight-studio/releases";
+pub const GITHUB_REPO: &str = "rcwkan/optixel-studio";
+pub const RELEASES_API_URL: &str = "https://api.github.com/repos/rcwkan/optixel-studio/releases/latest";
+pub const RELEASES_WEB_URL: &str = "https://github.com/rcwkan/optixel-studio/releases";
+pub const LICENSE_PURCHASE_URL: &str = "https://optixel.makecade.com/#pricing";
+pub const DEFAULT_ENTITLEMENT_ENDPOINT: &str = "https://updates.optixel.studio/v1/license/verify";
+
+static PENDING_PLUGIN_UPDATE: Mutex<Option<tauri_plugin_updater::Update>> = Mutex::new(None);
 
 #[allow(dead_code)]
 pub fn releases_page_url() -> &'static str {
@@ -68,6 +73,8 @@ pub struct UpdateInfo {
     pub html_url: String,
     pub recommended_asset: Option<ReleaseAsset>,
     pub all_assets: Vec<ReleaseAsset>,
+    #[serde(default)]
+    pub is_plugin_update: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +86,17 @@ pub struct DownloadProgressPayload {
     pub path: Option<String>,
     pub error: Option<String>,
     pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LicenseStatus {
+    pub key: String,
+    pub valid: bool,
+    pub tier: String,
+    pub email: Option<String>,
+    pub expires_at: Option<String>,
+    pub message: String,
+    pub purchase_url: Option<String>,
 }
 
 /// Parse semantic version numbers, ignoring prefix 'v' and suffix build/pre-release metadata.
@@ -144,7 +162,6 @@ pub fn pick_recommended_asset(assets: &[ReleaseAsset]) -> Option<ReleaseAsset> {
             }
         }
         "windows" => {
-            // First choice: Setup executable
             if let Some(a) = assets.iter().find(|a| {
                 let n = a.name.to_lowercase();
                 n.ends_with(".exe") && (n.contains("setup") || n.contains("installer") || n.contains("x64"))
@@ -154,21 +171,17 @@ pub fn pick_recommended_asset(assets: &[ReleaseAsset]) -> Option<ReleaseAsset> {
             if let Some(a) = assets.iter().find(|a| a.name.to_lowercase().ends_with(".exe")) {
                 return Some(a.clone());
             }
-            // Second choice: MSI installer
             if let Some(a) = assets.iter().find(|a| a.name.to_lowercase().ends_with(".msi")) {
                 return Some(a.clone());
             }
         }
         "linux" => {
-            // AppImage is universal
             if let Some(a) = assets.iter().find(|a| a.name.to_lowercase().ends_with(".appimage")) {
                 return Some(a.clone());
             }
-            // DEB package
             if let Some(a) = assets.iter().find(|a| a.name.to_lowercase().ends_with(".deb")) {
                 return Some(a.clone());
             }
-            // RPM package
             if let Some(a) = assets.iter().find(|a| a.name.to_lowercase().ends_with(".rpm")) {
                 return Some(a.clone());
             }
@@ -176,12 +189,11 @@ pub fn pick_recommended_asset(assets: &[ReleaseAsset]) -> Option<ReleaseAsset> {
         _ => {}
     }
 
-    // Default fallback: first asset if available
     assets.first().cloned()
 }
 
-/// Query GitHub Releases API for the latest version of OpenLight Studio.
-pub fn fetch_latest_release() -> Result<UpdateInfo, String> {
+/// Query GitHub Releases API as a community / development fallback.
+pub fn fetch_github_release() -> Result<UpdateInfo, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(10)))
@@ -191,7 +203,7 @@ pub fn fetch_latest_release() -> Result<UpdateInfo, String> {
 
     let mut resp = agent
         .get(RELEASES_API_URL)
-        .header("User-Agent", &format!("OpenLight-Studio/{current_version}"))
+        .header("User-Agent", &format!("Optixel-Studio/{current_version}"))
         .header("Accept", "application/vnd.github.v3+json")
         .call()
         .map_err(|e| format!("Failed to query GitHub releases: {e}"))?;
@@ -243,6 +255,7 @@ pub fn fetch_latest_release() -> Result<UpdateInfo, String> {
         html_url: release.html_url,
         recommended_asset,
         all_assets,
+        is_plugin_update: false,
     })
 }
 
@@ -253,9 +266,13 @@ pub fn download_update_file(
     filename: &str,
     expected_sha256: Option<&str>,
 ) -> Result<PathBuf, String> {
-    // Security: verify download URL is from the official release repository
-    if !url.starts_with("https://github.com/rcwkan/openlight-studio/releases/download/") {
-        return Err("Download URL must originate from the official OpenLight Studio GitHub repository".into());
+    // Security: verify download URL is from official domains
+    let is_official = url.starts_with("https://github.com/rcwkan/optixel-studio/releases/download/")
+        || url.starts_with("https://updates.optixel.studio/")
+        || url.starts_with("https://optixel-studio-updates.workers.dev/");
+
+    if !is_official {
+        return Err("Download URL must originate from official Optixel Studio release servers".into());
     }
 
     let clean_filename: String = filename
@@ -289,7 +306,7 @@ pub fn download_update_file(
 
     let mut resp = agent
         .get(url)
-        .header("User-Agent", "OpenLight-Studio-Updater")
+        .header("User-Agent", "Optixel-Studio-Updater")
         .call()
         .map_err(|e| format!("Failed to start download: {e}"))?;
 
@@ -406,7 +423,6 @@ pub fn launch_installer(path: &Path) -> Result<(), String> {
         return Err(format!("Installer file not found or is not a regular file: {}", path.display()));
     }
 
-    // Security: strictly validate the installer file extension
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -466,7 +482,6 @@ pub fn open_browser_url(url: &str) -> Result<(), String> {
         return Err("Only http and https URLs can be opened".into());
     }
 
-    // Security: reject control characters and shell command injection characters
     if url.chars().any(|c| c.is_control() || "&|;\"'<>^%`$\\".contains(c)) {
         return Err("Invalid characters detected in URL".into());
     }
@@ -503,29 +518,229 @@ pub fn open_browser_url(url: &str) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 #[tauri::command(async)]
-pub fn check_for_updates() -> Result<UpdateInfo, String> {
-    fetch_latest_release()
+pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+
+    // Check user license key from Core settings or environment
+    let license_key = {
+        let core = app.try_state::<crate::St>();
+        core.and_then(|c| c.settings.lock().ok().and_then(|s| s.license_key.clone()))
+            .or_else(|| std::env::var("OPTIXEL_LICENSE_KEY").ok())
+            .or_else(|| std::env::var("OPENLIGHT_LICENSE_KEY").ok())
+    };
+
+    // Attempt cryptographic update check via tauri-plugin-updater
+    let updater_res = {
+        let b = app.updater_builder();
+        if let Some(ref key) = license_key {
+            let clean = key.trim();
+            if !clean.is_empty() {
+                b.header("Authorization", format!("Bearer {clean}"))
+                    .and_then(|b| b.header("X-Optixel-License-Key", clean))
+                    .and_then(|b| b.build())
+            } else {
+                b.build()
+            }
+        } else {
+            b.build()
+        }
+    };
+
+    if let Ok(updater) = updater_res {
+        match updater.check().await {
+            Ok(Some(update)) => {
+                let latest_version = update.version.clone();
+                let release_notes = update.body.clone().unwrap_or_default();
+                let published_at = update
+                    .date
+                    .map(|d| d.to_string())
+                    .unwrap_or_default();
+
+                *PENDING_PLUGIN_UPDATE.lock().unwrap() = Some(update);
+
+                return Ok(UpdateInfo {
+                    current_version: current_version.clone(),
+                    latest_version: latest_version.clone(),
+                    has_update: true,
+                    release_name: format!("Optixel Studio v{latest_version}"),
+                    release_tag: format!("v{latest_version}"),
+                    release_notes,
+                    published_at,
+                    html_url: LICENSE_PURCHASE_URL.into(),
+                    recommended_asset: Some(ReleaseAsset {
+                        name: format!("Optixel-Studio-{latest_version}-update"),
+                        size: 0,
+                        browser_download_url: "tauri-plugin-updater://in-app".into(),
+                        content_type: "application/octet-stream".into(),
+                        sha256: None,
+                    }),
+                    all_assets: vec![],
+                    is_plugin_update: true,
+                });
+            }
+            Ok(None) => {
+                *PENDING_PLUGIN_UPDATE.lock().unwrap() = None;
+                return Ok(UpdateInfo {
+                    current_version: current_version.clone(),
+                    latest_version: current_version.clone(),
+                    has_update: false,
+                    release_name: format!("Optixel Studio v{current_version}"),
+                    release_tag: format!("v{current_version}"),
+                    release_notes: "You are running the latest version of Optixel Studio.".into(),
+                    published_at: String::new(),
+                    html_url: RELEASES_WEB_URL.into(),
+                    recommended_asset: None,
+                    all_assets: vec![],
+                    is_plugin_update: true,
+                });
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                // If the error indicates entitlement denial (HTTP 402/403)
+                if err_msg.contains("402") || err_msg.contains("Payment Required") || err_msg.contains("expired") {
+                    return Err(format!(
+                        "Active updates require a valid Optixel Studio license. Please renew or purchase at: {LICENSE_PURCHASE_URL}"
+                    ));
+                }
+                // Fall back to GitHub public release check on network/server failure
+            }
+        }
+    }
+
+    // Community / fallback updater check
+    fetch_github_release()
 }
 
 #[tauri::command(async)]
-pub fn download_update(
+pub async fn download_update(
     app: tauri::AppHandle,
     url: String,
     filename: String,
     expected_sha256: Option<String>,
 ) -> Result<String, String> {
+    // If this is an in-app signed update managed by tauri-plugin-updater
+    if url == "tauri-plugin-updater://in-app" {
+        let update_opt = PENDING_PLUGIN_UPDATE.lock().unwrap().take();
+        if let Some(update) = update_opt {
+            let app_handle = app.clone();
+            let mut total_downloaded: u64 = 0;
+
+            update
+                .download_and_install(
+                    move |chunk_len, content_len| {
+                        total_downloaded += chunk_len as u64;
+                        let total = content_len.unwrap_or(0);
+                        let percent = if total > 0 {
+                            ((total_downloaded as f64 / total as f64) * 100.0) as f32
+                        } else {
+                            0.0
+                        };
+                        let _ = app_handle.emit(
+                            "update-download-progress",
+                            DownloadProgressPayload {
+                                status: "downloading".into(),
+                                downloaded: total_downloaded,
+                                total,
+                                percent,
+                                path: None,
+                                error: None,
+                                sha256: None,
+                            },
+                        );
+                    },
+                    move || {
+                        let _ = app.emit(
+                            "update-download-progress",
+                            DownloadProgressPayload {
+                                status: "completed".into(),
+                                downloaded: total_downloaded,
+                                total: total_downloaded,
+                                percent: 100.0,
+                                path: Some("installed".into()),
+                                error: None,
+                                sha256: None,
+                            },
+                        );
+                    },
+                )
+                .await
+                .map_err(|e| format!("Failed to download and install update: {e}"))?;
+
+            return Ok("Update downloaded and installed. Please restart Optixel Studio.".into());
+        }
+    }
+
     download_update_file(&app, &url, &filename, expected_sha256.as_deref())
         .map(|p| p.to_string_lossy().to_string())
 }
 
 #[tauri::command(async)]
 pub fn install_update(path: String) -> Result<(), String> {
+    if path == "installed" {
+        return Ok(());
+    }
     launch_installer(Path::new(&path))
 }
 
 #[tauri::command(async)]
 pub fn open_external_url(url: String) -> Result<(), String> {
     open_browser_url(&url)
+}
+
+#[tauri::command(async)]
+pub fn verify_license_key(key: String) -> Result<LicenseStatus, String> {
+    let clean = key.trim();
+    if clean.is_empty() {
+        return Ok(LicenseStatus {
+            key: String::new(),
+            valid: false,
+            tier: "free".into(),
+            email: None,
+            expires_at: None,
+            message: "No license key provided.".into(),
+            purchase_url: Some(LICENSE_PURCHASE_URL.into()),
+        });
+    }
+
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(5)))
+        .timeout_per_read(Some(Duration::from_secs(10)))
+        .build()
+        .into();
+
+    let url = format!("{DEFAULT_ENTITLEMENT_ENDPOINT}?key={clean}");
+    match agent.get(&url).header("User-Agent", "Optixel-Studio").call() {
+        Ok(mut resp) => {
+            let body = resp.body_mut().read_to_string().map_err(es)?;
+            if let Ok(status) = serde_json::from_str::<LicenseStatus>(&body) {
+                return Ok(status);
+            }
+        }
+        Err(_) => {
+            // Offline or uncontactable: fallback check for well-formed key pattern
+            if (clean.starts_with("OPT-") || clean.starts_with("OLS-")) && clean.len() >= 16 {
+                return Ok(LicenseStatus {
+                    key: clean.into(),
+                    valid: true,
+                    tier: "pro".into(),
+                    email: None,
+                    expires_at: None,
+                    message: "Offline license active. Auto-updates will resume when connected.".into(),
+                    purchase_url: None,
+                });
+            }
+        }
+    }
+
+    Ok(LicenseStatus {
+        key: clean.into(),
+        valid: false,
+        tier: "invalid".into(),
+        email: None,
+        expires_at: None,
+        message: "Invalid or unverified license key.".into(),
+        purchase_url: Some(LICENSE_PURCHASE_URL.into()),
+    })
 }
 
 #[cfg(test)]
@@ -554,21 +769,21 @@ mod tests {
     fn asset_recommendation_logic() {
         let assets = vec![
             ReleaseAsset {
-                name: "OpenLight.Studio_0.2.2_aarch64.dmg".into(),
+                name: "Optixel.Studio_0.3.0_aarch64.dmg".into(),
                 size: 1000,
                 browser_download_url: "https://example.com/mac-arm.dmg".into(),
                 content_type: "application/zip".into(),
                 sha256: None,
             },
             ReleaseAsset {
-                name: "OpenLight.Studio_0.2.2_x64-setup.exe".into(),
+                name: "Optixel.Studio_0.3.0_x64-setup.exe".into(),
                 size: 1000,
                 browser_download_url: "https://example.com/win-setup.exe".into(),
                 content_type: "application/zip".into(),
                 sha256: None,
             },
             ReleaseAsset {
-                name: "OpenLight.Studio_0.2.2_amd64.AppImage".into(),
+                name: "Optixel.Studio_0.3.0_amd64.AppImage".into(),
                 size: 1000,
                 browser_download_url: "https://example.com/linux.AppImage".into(),
                 content_type: "application/zip".into(),
@@ -588,15 +803,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn live_check_github_release() {
-        let release = fetch_latest_release();
-        assert!(release.is_ok(), "Failed to fetch release: {:?}", release.err());
-        let info = release.unwrap();
-        assert!(!info.latest_version.is_empty());
-        println!("Latest release tag: {}", info.release_tag);
-        println!("Latest release version: {}", info.latest_version);
-        println!("Has update: {}", info.has_update);
-        println!("Recommended asset: {:?}", info.recommended_asset.map(|a| a.name));
+    fn offline_license_verification_format() {
+        let valid_key = "OLS-PRO-9988-7766-5544";
+        let status = verify_license_key(valid_key.into()).unwrap();
+        assert!(status.valid);
+        assert_eq!(status.tier, "pro");
+
+        let empty_status = verify_license_key("".into()).unwrap();
+        assert!(!empty_status.valid);
     }
 }

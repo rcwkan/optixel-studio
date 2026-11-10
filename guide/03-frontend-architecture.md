@@ -1,6 +1,6 @@
 # Chapter 3: Frontend Architecture & UI Guidelines
 
-This chapter documents the frontend architecture of OpenLight Studio: technology choices, component decomposition, custom UI controls, state management, 60fps rendering guidelines, and keyboard shortcuts.
+This chapter documents the frontend architecture of Optixel Studio: technology choices, component decomposition, custom UI controls, state management, 60fps rendering guidelines, and keyboard shortcuts.
 
 ---
 
@@ -91,7 +91,7 @@ graph TD
 
 ## 3. Custom UI Controls & Design System ([`controls.tsx`](../src/controls.tsx))
 
-OpenLight Studio does not use heavy external component libraries. Instead, it features dedicated, high-performance photography controls:
+Optixel Studio does not use heavy external component libraries. Instead, it features dedicated, high-performance photography controls:
 
 | Control Component | Purpose | Interaction Details |
 |---|---|---|

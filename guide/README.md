@@ -1,8 +1,8 @@
-# OpenLight Studio — Developer Documentation & Engineering Guidelines
+# Optixel Studio — Developer Documentation & Engineering Guidelines
 
-Welcome to the **OpenLight Studio (OLS)** developer guide. This documentation is the authoritative reference for software engineers, systems programmers, and AI coding agents (including Google Antigravity) developing, extending, testing, and packaging OpenLight Studio.
+Welcome to the **Optixel Studio** developer guide. This documentation is the authoritative reference for software engineers, systems programmers, and AI coding agents (including Google Antigravity) developing, extending, testing, and packaging Optixel Studio.
 
-OpenLight Studio is a professional, non-destructive RAW photo processor, digital asset manager (DAM), and studio production suite built on **Tauri v2**, **Rust**, **React 19**, **TypeScript**, **Tailwind CSS**, and **SQLite (WAL)**. It features a built-in **Model Context Protocol (MCP)** server and a **pluggable AI/CLI agent router** that enables autonomous agents and local/cloud neural models to inspect, cull, edit, and export photos alongside human photographers.
+Optixel Studio is a professional, non-destructive RAW photo processor, digital asset manager (DAM), and studio production suite built on **Tauri v2**, **Rust**, **React 19**, **TypeScript**, **Tailwind CSS**, and **SQLite (WAL)**. It features a built-in **Model Context Protocol (MCP)** server and a **pluggable AI/CLI agent router** that enables autonomous agents and local/cloud neural models to inspect, cull, edit, and export photos alongside human photographers.
 
 ---
 
@@ -66,7 +66,7 @@ All major operations have helper scripts located in `./scripts/` and npm scripts
 # 1. Install dependencies
 npm install
 
-# 2. Run OpenLight Studio in development mode (hot-reloading React + live native desktop)
+# 2. Run Optixel Studio in development mode (hot-reloading React + live native desktop)
 npm run app
 # Or directly:
 ./scripts/dev.sh
@@ -97,7 +97,7 @@ npm run mcp
 ## Core Tenets & Engineering Principles
 
 1. **Non-Destructive Guarantee**: Original RAW and bitmap files are **strictly read-only**. All crop, tone, color, geometry, and retouch operations are stored as mathematical recipes in SQLite (`catalog.olcat`) and synced to `.olxmp` sidecar files.
-2. **Single Truth Pipeline**: The same Rust rendering pipeline (`develop::render`) generates the 1600px interactive viewport proxy, full-resolution 16-bit exports, and MCP agent previews. What the AI sees through `photo_inspect` or `openlight://photo/{id}/preview` matches the human photographer's screen pixel-for-pixel.
+2. **Single Truth Pipeline**: The same Rust rendering pipeline (`develop::render`) generates the 1600px interactive viewport proxy, full-resolution 16-bit exports, and MCP agent previews. What the AI sees through `photo_inspect` or `optixel://photo/{id}/preview` matches the human photographer's screen pixel-for-pixel.
 3. **Pluggable AI Co-Piloting**: AI is a first-class collaborator. Through MCP (port `41920`) or CLI providers (Antigravity, Claude), agents can inspect image histograms, detect clipping, generate boolean polygon masks, heal blemishes, and apply precise parametric corrections with an automatic undo/redo stack.
 4. **Resilient Local-First DAM**: No forced cloud account or vendor lock-in. Folders are browsed in-place without copying. Remote cloud folders (S3, Dropbox, OneDrive) and photo services (Immich, Google Photos) are downloaded on demand into a structured cache.
 

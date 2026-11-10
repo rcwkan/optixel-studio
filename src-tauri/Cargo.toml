@@ -1,8 +1,8 @@
 [package]
-name = "openlight-studio"
-version = "0.2.2"
-description = "OpenLight Studio: non-destructive RAW processor and DAM with a built-in MCP server"
-authors = ["OpenLight Studio contributors"]
+name = "optixel-studio"
+version = "0.3.0"
+description = "Optixel Studio: non-destructive RAW processor and DAM with a built-in MCP server"
+authors = ["Optixel Studio contributors"]
 license = "MIT"
 edition = "2024"
 
@@ -12,17 +12,20 @@ edition = "2024"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "openlight_studio_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+name = "optixel_studio_lib"
+crate-type = ["lib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+cc = { version = "1.1", features = ["parallel"] }
+naga = { version = "30.0.1", features = ["wgsl-in", "spv-out"] }
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
 rusqlite = { version = "0.41.0", features = ["bundled"] }
 image = "0.25.10"
 kamadak-exif = "0.6.1"
@@ -35,8 +38,10 @@ rawler = "0.8.0"
 getrandom = "0.4.3"
 ureq = { version = "3.5.0", features = ["json"] }
 moxcms = "0.8.1"
+lcms2 = { version = "6.2", features = ["static"] }
+jxl-oxide = { version = "0.12", features = ["lcms2"] }
 ring = "0.17"
-wgpu = "30.0.1"
+wgpu = { version = "30.0.1", features = ["spirv"] }
 pollster = "1.0.1"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 ort = { version = "=2.0.0-rc.15", features = ["half"] }

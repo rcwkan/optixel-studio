@@ -1,11 +1,11 @@
 import { listen } from "@tauri-apps/api/event";
 import { Fragment, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CalibrationPanel, GrainPanel, LensPanel, ProofPanel, SpotPanel, TransformPanel } from "./Advanced";
+import { CalibrationPanel, GrainPanel, LensPanel, ProofPanel, RawEnginePanel, SpotPanel, TransformPanel } from "./Advanced";
 import { Log } from "./Agent";
 import { AiTab } from "./AiDenoise";
 import { AiSelectPanel, AutoTab, PROFILES } from "./Auto";
 import { ChannelMixerPanel, FiltersPanel, GradientMapPanel, HdrTab, HueSatPanel, LevelsPanel, SelectiveColorPanel } from "./Pro";
-import { api, Snap, Stroke, Develop as Dev, getPath, HistoryEntry, Mask, MaskComponent, Photo, Proof, Rendered, setPath, Settings, srgbToOklch, thumbUrl } from "./api";
+import { api, FocusPeakingResult, RawInfo, ScopesData, Snap, Stroke, Develop as Dev, getPath, HistoryEntry, Mask, MaskComponent, Photo, Proof, Rendered, setPath, Settings, srgbToOklch, thumbUrl } from "./api";
 import { Btn, ColorWheel, CurveEditor, Histogram, Panel, Seg, Slider } from "./controls";
 
 export interface AiTaskState {
@@ -200,7 +200,15 @@ export function Develop(p: Props) {
   const [rtab, setRtab] = useState<RTab>("adjust");
   /** AI Select / spot heal: where the click being worked on was (normalised) */
   const [picking, setPicking] = useState<{ x: number; y: number } | null>(null);
-  const [proof, setProof] = useState<Proof>({ gamut: null, clipping: false, spots: null });
+  const [proof, setProof] = useState<Proof>({ gamut: null, clipping: false, spots: null, intent: "perceptual", bpc: true, simulate_paper: false, gamut_warn: true });
+  /** Real-time scope mode: Histogram | RGB Parade | Luma/Chroma Waveform */
+  const [scopeMode, setScopeMode] = useState<"hist" | "parade" | "waveform">("hist");
+  const [scopesData, setScopesData] = useState<ScopesData | null>(null);
+  const scopeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [rawInfo, setRawInfo] = useState<RawInfo | null>(null);
+  const [showAfOverlay, setShowAfOverlay] = useState(false);
+  const [focusPeaking, setFocusPeaking] = useState<FocusPeakingResult | null>(null);
+  const [showFocusPeaking, setShowFocusPeaking] = useState(false);
   /** spot heal radius, % of the long edge */
   const [spotSize, setSpotSize] = useState(1.5);
   /** Guided Upright line being drawn */
@@ -558,10 +566,79 @@ export function Develop(p: Props) {
   const showBefore = before || peekingBefore;
   useEffect(() => {
     if (id == null || !dev) return;
-    const view = showBefore ? null : { gamut: proof.gamut, clipping: proof.clipping, spots };
+    const view: Proof | null = showBefore
+      ? null
+      : {
+          gamut: proof.gamut,
+          clipping: proof.clipping,
+          spots,
+          intent: proof.intent ?? "perceptual",
+          bpc: proof.bpc ?? true,
+          simulate_paper: proof.simulate_paper ?? false,
+          gamut_warn: proof.gamut_warn ?? true,
+        };
     job.current = { id, d: showBefore ? p.defaults : dev, skip: skipCrop && !showBefore, overlay: overlay && !showBefore ? maskSel : null, full: fullFrame, proof: view };
     pump();
-  }, [id, dev, showBefore, skipCrop, fullFrame, overlay, maskSel, proof.gamut, proof.clipping, spots, p.defaults, compareMode, pump]);
+  }, [id, dev, showBefore, skipCrop, fullFrame, overlay, maskSel, proof.gamut, proof.clipping, proof.intent, proof.bpc, proof.simulate_paper, proof.gamut_warn, spots, p.defaults, compareMode, pump]);
+
+  // Fetch LibRaw C++ sensor optical calibration & MakerNotes (active AF points, shutter count, lens serial)
+  useEffect(() => {
+    if (id == null) {
+      setRawInfo(null);
+      setFocusPeaking(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .rawInfo(id)
+      .then((info) => !cancelled && setRawInfo(info))
+      .catch(() => !cancelled && setRawInfo(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  // Fetch native C++ Focus-Peaking & Blink / EAR telemetry when enabled
+  useEffect(() => {
+    if (id == null || !showFocusPeaking) return;
+    let cancelled = false;
+    api
+      .focusPeaking(id)
+      .then((res) => !cancelled && setFocusPeaking(res))
+      .catch(() => !cancelled && setFocusPeaking(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [id, showFocusPeaking, dev?.detail]);
+
+  // Compute Real-Time RGB Parade & Luma/Chroma Waveform Scopes (AOT SPIR-V GPU compute shader / C++ fallback)
+  useEffect(() => {
+    if (id == null || !dev || scopeMode === "hist") return;
+    let cancelled = false;
+    const t = window.setTimeout(() => {
+      api
+        .renderScopes(id, showBefore ? p.defaults : dev, 284, 112)
+        .then((sc) => {
+          if (!cancelled) setScopesData(sc);
+        })
+        .catch(() => {});
+    }, 60);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [id, dev, showBefore, p.defaults, scopeMode]);
+
+  useEffect(() => {
+    if (scopeMode === "hist" || !scopesData || !scopeCanvasRef.current) return;
+    const img = scopeMode === "parade" ? scopesData.parade : scopesData.waveform;
+    const c = scopeCanvasRef.current;
+    if (c.width !== img.width || c.height !== img.height) {
+      c.width = img.width;
+      c.height = img.height;
+    }
+    c.getContext("2d")?.putImageData(img, 0, 0);
+  }, [scopeMode, scopesData]);
 
   useEffect(() => {
     if (id != null && beforeJobIdRef.current !== id) {
@@ -673,7 +750,17 @@ export function Develop(p: Props) {
   const zoomedPastProxy = fitScaleRef.current * zoom * (window.devicePixelRatio || 1) > 1.02;
   useEffect(() => {
     if (id == null || !dev || !zoomedPastProxy) return;
-    const view = showBefore ? null : { gamut: proof.gamut, clipping: proof.clipping, spots };
+    const view: Proof | null = showBefore
+      ? null
+      : {
+          gamut: proof.gamut,
+          clipping: proof.clipping,
+          spots,
+          intent: proof.intent ?? "perceptual",
+          bpc: proof.bpc ?? true,
+          simulate_paper: proof.simulate_paper ?? false,
+          gamut_warn: proof.gamut_warn ?? true,
+        };
     let cancelled = false;
     const t = setTimeout(() => {
       api
@@ -685,7 +772,7 @@ export function Develop(p: Props) {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [id, dev, showBefore, skipCrop, fullFrame, overlay, maskSel, proof.gamut, proof.clipping, spots, p.defaults, zoomedPastProxy]);
+  }, [id, dev, showBefore, skipCrop, fullFrame, overlay, maskSel, proof.gamut, proof.clipping, proof.intent, proof.bpc, proof.simulate_paper, proof.gamut_warn, spots, p.defaults, zoomedPastProxy]);
 
   useEffect(() => {
     const el = boxRef.current;
@@ -1534,6 +1621,47 @@ export function Develop(p: Props) {
             </Fragment>
           ) : null,
         )}
+      {showFocusPeaking && focusPeaking && (
+        <>
+          <img
+            src={focusPeaking.overlay_data_url}
+            alt=""
+            draggable={false}
+            className="pointer-events-none absolute inset-0 h-full w-full object-contain mix-blend-screen"
+          />
+          <div className="pointer-events-none absolute bottom-3 left-3 z-20 flex items-center gap-2 rounded bg-neutral-950/85 px-2.5 py-1 font-mono text-[10px] text-emerald-300 border border-emerald-700/60 shadow-lg backdrop-blur-md">
+            <span>◉ Focus: {focusPeaking.focus_score}%</span>
+            <span>·</span>
+            <span>Eye EAR: {focusPeaking.eye_openness}</span>
+            <span className={focusPeaking.blink_detected ? "text-rose-400 font-bold" : "text-emerald-400"}>
+              {focusPeaking.blink_detected ? "⚠ Blink Detected" : "✓ Eyes Open"}
+            </span>
+          </div>
+        </>
+      )}
+      {showAfOverlay && rawInfo && rawInfo.af_points.length > 0 && (
+        <svg viewBox="0 0 1 1" preserveAspectRatio="none" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
+          {rawInfo.af_points.map((af, idx) => {
+            const isEye = af.kind === "eye" || af.kind === "face";
+            const stroke = isEye ? "#10b981" : af.active ? "#ef4444" : "rgba(255,255,255,0.38)";
+            const sw = isEye || af.active ? 2 : 1;
+            return (
+              <g key={idx}>
+                <rect
+                  x={af.x - af.w / 2}
+                  y={af.y - af.h / 2}
+                  width={af.w}
+                  height={af.h}
+                  fill={af.active ? (isEye ? "rgba(16,185,129,0.12)" : "rgba(239,68,68,0.12)") : "none"}
+                  stroke={stroke}
+                  strokeWidth={sw}
+                  vectorEffect="non-scaling-stroke"
+                />
+              </g>
+            );
+          })}
+        </svg>
+      )}
     </>
   );
 
@@ -1763,6 +1891,22 @@ export function Develop(p: Props) {
             )}
             <Btn active={tool === "select"} onClick={() => setTool(tool === "select" ? "none" : "select")} title="AI Select (S): click objects to select them with the AI; then every panel tunes only the selection">
               ✦ Select
+            </Btn>
+            {rawInfo && rawInfo.af_points.length > 0 && (
+              <Btn
+                active={showAfOverlay}
+                onClick={() => setShowAfOverlay(!showAfOverlay)}
+                title="Show active autofocus points & Eye-AF boxes decoded from camera MakerNotes"
+              >
+                ⌖ AF ({rawInfo.af_points.filter((a) => a.active).length})
+              </Btn>
+            )}
+            <Btn
+              active={showFocusPeaking}
+              onClick={() => setShowFocusPeaking(!showFocusPeaking)}
+              title="Toggle C++ Focus-Peaking & Blink / EAR overlay"
+            >
+              ◉ Peaking
             </Btn>
             <Btn
               active={before && compareMode === "off"}
@@ -2299,7 +2443,39 @@ export function Develop(p: Props) {
 
       <aside className="w-[310px] shrink-0 overflow-y-auto border-l border-neutral-800 bg-neutral-900">
         <div className="border-b border-neutral-800 p-3">
-          <Histogram hist={hist} />
+          <div className="mb-1.5 flex items-center justify-between text-[10px]">
+            <span className="font-semibold uppercase tracking-wider text-neutral-500">
+              {scopeMode === "hist" ? "Histogram" : scopeMode === "parade" ? "RGB Parade (SPIR-V)" : "Waveform (SPIR-V)"}
+            </span>
+            <div className="flex rounded bg-neutral-800 p-0.5 text-[9px]">
+              {(
+                [
+                  ["hist", "Hist"],
+                  ["parade", "Parade"],
+                  ["waveform", "Waveform"],
+                ] as const
+              ).map(([m, label]) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setScopeMode(m)}
+                  className={`rounded px-1.5 py-0.5 transition ${
+                    scopeMode === m ? "bg-neutral-600 font-semibold text-white" : "text-neutral-400 hover:text-neutral-200"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {scopeMode === "hist" ? (
+            <Histogram hist={hist} />
+          ) : (
+            <canvas
+              ref={scopeCanvasRef}
+              className="h-28 w-full rounded bg-neutral-950 border border-neutral-800/80 block"
+            />
+          )}
         </div>
         {mask && (
           <div className="sticky top-0 z-10 flex items-center gap-1.5 border-b border-violet-800/60 bg-violet-950/95 px-3 py-2 text-[11px]">
@@ -2422,6 +2598,14 @@ export function Develop(p: Props) {
             </Panel>
 
             <LevelsPanel {...tp} autoLevels={mask ? undefined : autoLevels} />
+            {!mask && W && (
+              <RawEnginePanel
+                {...W}
+                rawInfo={rawInfo}
+                showAfOverlay={showAfOverlay}
+                setShowAfOverlay={setShowAfOverlay}
+              />
+            )}
           </>
         )}
 
@@ -2557,6 +2741,14 @@ export function Develop(p: Props) {
             <FiltersPanel {...tp} />
 
             {!mask && <SpotPanel {...W} tool={tool} setTool={setTool} proof={proof} setProof={setProof} spotSize={spotSize} setSpotSize={setSpotSize} />}
+            {!mask && (
+              <RawEnginePanel
+                {...W}
+                rawInfo={rawInfo}
+                showAfOverlay={showAfOverlay}
+                setShowAfOverlay={setShowAfOverlay}
+              />
+            )}
             {mask && <p className="px-3 py-2 text-[10px] text-neutral-500">Vignette, grain and spot removal are for the whole photo: press Done to see them.</p>}
           </>
         )}

@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenLight Studio</title>
+<title>Optixel Studio</title>
 <meta name="description" content="Non-destructive RAW processor and photo catalog with a built-in MCP server and a pluggable AI router. Open source, local-first, MIT.">
-<meta property="og:title" content="OpenLight Studio — the photo editor your AI agent can drive">
+<meta property="og:title" content="Optixel Studio — the photo editor your AI agent can drive">
 <meta property="og:description" content="Non-destructive RAW editing, cataloging and culling, with a built-in MCP server. Open source and local-first.">
 <link rel="icon" href="icon.png">
 <script>
   (function(){
     try {
-      var s = localStorage.getItem("openlight-theme");
+      var s = localStorage.getItem("optixel-theme");
       var p = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
       var t = s === "light" || s === "dark" ? s : (p ? "light" : "dark");
       document.documentElement.setAttribute("data-theme", t);
@@ -620,9 +620,9 @@ footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
 <div id="pageLoader" aria-hidden="true">
   <div class="pl-icon-wrap">
     <div class="pl-ring"></div>
-    <img src="icon.png" alt="OpenLight Studio">
+    <img src="icon.png" alt="Optixel Studio">
   </div>
-  <div class="pl-title">OpenLight Studio</div>
+  <div class="pl-title">Optixel Studio</div>
   <div class="pl-bar"><i></i></div>
   <div class="pl-sub">Loading 32-bit RAW Demos…</div>
 </div>
@@ -649,7 +649,7 @@ footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
 
 <nav class="top" id="nav">
   <div class="wrap">
-    <a class="brand" href="#top"><img src="icon.png" alt="">OpenLight Studio</a>
+    <a class="brand" href="#top"><img src="icon.png" alt="">Optixel Studio</a>
     <div class="links">
       <a href="#intro">Intro</a>
       <a href="#features">Features</a>
@@ -663,7 +663,7 @@ footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
         <span class="theme-icon" aria-hidden="true">☀️</span>
         <span class="theme-label">Light</span>
       </button>
-      <a class="btn small primary" href="https://github.com/rcwkan/openlight-studio">GitHub</a>
+      <a class="btn small primary" href="https://github.com/rcwkan/optixel-studio">GitHub</a>
     </div>
   </div>
 </nav>
@@ -673,15 +673,15 @@ footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
   <div class="wrap">
     <span class="pill reveal"><span class="dot"></span>Open source · MIT · v0.1</span>
     <h1 class="reveal">The RAW editor your <span class="grad">AI agent</span> can drive.</h1>
-    <p class="lead reveal">OpenLight Studio is a non-destructive RAW processor and photo catalog with a built-in MCP server. Edit by hand, ask in plain words, or let Claude cull and grade a whole shoot — every change stays undoable.</p>
+    <p class="lead reveal">Optixel Studio is a non-destructive RAW processor and photo catalog with a built-in MCP server. Edit by hand, ask in plain words, or let Claude cull and grade a whole shoot — every change stays undoable.</p>
     <div class="cta reveal">
-      <a class="btn primary" href="https://github.com/rcwkan/openlight-studio/releases">⬇ Download for macOS · Windows · Linux</a>
+      <a class="btn primary" href="https://github.com/rcwkan/optixel-studio/releases">⬇ Download for macOS · Windows · Linux</a>
       <a class="btn" href="#demos">Try the demos ↓</a>
     </div>
     <p class="stack reveal">Tauri v2 · Rust · React 19 · SQLite · rawler</p>
 
     <div class="shot reveal">
-      <div class="win" role="img" aria-label="OpenLight Studio Develop view with the AI prompt bar">
+      <div class="win" role="img" aria-label="Optixel Studio Develop view with the AI prompt bar">
         <div class="tb">
           <div class="lights"><i></i><i></i><i></i></div>
           <div class="modtabs"><span>Library</span><span class="on">Develop</span><span>Settings</span></div>
@@ -731,14 +731,14 @@ footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
       <div class="reveal">
         <p class="eyebrow">Intro</p>
         <h2>A full darkroom that speaks <span class="grad">MCP</span>.</h2>
-        <p class="lead">OpenLight Studio catalogs, culls and develops your photos where they already live — folders, NAS shares, cloud buckets, Immich and Google Photos — without ever touching the originals.</p>
+        <p class="lead">Optixel Studio catalogs, culls and develops your photos where they already live — folders, NAS shares, cloud buckets, Immich and Google Photos — without ever touching the originals.</p>
         <p class="lead" style="margin-top:14px">One Rust pipeline in linear Rec.2020 float renders the viewport, the MCP previews and the full-resolution export, so an agent sees exactly what you see. Every agent call is one undoable history step, logged in the photo's provenance.</p>
       </div>
       <div class="pillars reveal">
-        <div class="pillar"><div class="ic">🛡️</div><h3>Non-destructive</h3><p>Edits live in the catalog and an <code>.olxmp</code> sidecar. Originals are never overwritten.</p></div>
-        <div class="pillar"><div class="ic">🏠</div><h3>Local-first</h3><p>SQLite catalog on your disk. MCP listens on loopback only, behind a bearer token.</p></div>
-        <div class="pillar"><div class="ic">🤖</div><h3>Agent-ready</h3><p>Claude, Antigravity, Ollama, LM Studio, OpenAI, Gemini — pick a provider, or plug in a CLI.</p></div>
-        <div class="pillar"><div class="ic">🔓</div><h3>Open source</h3><p>MIT licensed. Read the code, file an issue, ship a pull request.</p></div>
+        <div class="pillar"><div class="ic">🛡️</div><h3>Non-destructive</h3><p>Edits live in the catalog, standard Adobe <code>.xmp</code>, and <code>.olxmp</code> sidecars. Master RAWs remain untouched.</p></div>
+        <div class="pillar"><div class="ic">📷</div><h3>Native C++ RAW Core</h3><p>Embedded LibRaw C++ with AMaZE &amp; RCD demosaicing, Canon CR3, Nikon HE, and Fuji X-Trans support.</p></div>
+        <div class="pillar"><div class="ic">🎨</div><h3>Studio Color &amp; GPU</h3><p>32-bit ProPhoto &amp; ACEScg via LittleCMS 2, printer soft-proofing, and AOT SPIR-V compute kernels.</p></div>
+        <div class="pillar"><div class="ic">🤖</div><h3>Agent-ready MCP</h3><p>Claude, Antigravity, Ollama, LM Studio, OpenAI, Gemini — full MCP tool and telemetry suite.</p></div>
       </div>
     </div>
     <div class="stats reveal">
@@ -768,6 +768,26 @@ footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
         <div class="ic">🎚️</div>
         <h3>Develop</h3>
         <p>White balance, tone, presence, parametric and point curves, 8-band colour mixer, Point Color, 3-way grading, detail, vignette, crop &amp; straighten.</p>
+      </article>
+      <article class="fcard reveal" style="--glow:rgba(37,198,216,.2)">
+        <div class="ic">📷</div>
+        <h3>Native C++ LibRaw Engine</h3>
+        <p>Studio-grade decoding for Canon CR3 (C-RAW), Nikon high-efficiency NEF, Sony ARW, and Fuji X-Trans sensors. Pro demosaicing selector: <b>AMaZE</b> (anti-aliasing &amp; low-ISO suppression), <b>RCD</b> (maximum edge sharpness), and <b>LMMSE</b> (high-ISO &amp; astro).</p>
+      </article>
+      <article class="fcard reveal" style="--glow:rgba(246,185,48,.2)">
+        <div class="ic">🎨</div>
+        <h3>LittleCMS2 Soft-Proofing</h3>
+        <p>End-to-end 32-bit floating-point <b>ProPhoto RGB</b> and <b>ACEScg</b> pipeline. Load custom paper/printer <code>.icc</code> profiles with ink black-point compensation; unprintable out-of-gamut pixels flash in high-visibility neon overlays.</p>
+      </article>
+      <article class="fcard reveal" style="--glow:rgba(52,211,153,.2)">
+        <div class="ic">⚡</div>
+        <h3>Lossless SIMD JPEG &amp; Sidecars</h3>
+        <p>Hardware-accelerated lossless JPEG cropping, rotation and mirroring with <b>libjpeg-turbo</b> without recompressing DCT blocks. Decode encrypted MakerNotes to draw exact active AF / eye-AF focus boxes (<kbd>A</kbd>); 2-way Lightroom <code>.xmp</code> sync.</p>
+      </article>
+      <article class="fcard reveal" style="--glow:rgba(167,139,250,.2)">
+        <div class="ic">🚀</div>
+        <h3>AOT GPU Compute Kernels</h3>
+        <p>Ahead-of-Time compiled binary <b>SPIR-V</b> bytecode embedded in the executable: local clarity/dehaze pyramids, 3D LUT trilinear interpolation, axial defringing, and 60 FPS real-time RGB Parade and Waveform scopes.</p>
       </article>
       <article class="fcard reveal" style="--glow:rgba(167,139,250,.24)">
         <div class="ic">🧠</div>
@@ -1012,7 +1032,7 @@ footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
         <span class="tag">AI TAB · ON-DEVICE NEURAL MODELS</span>
         <h3>In-place object removal and AI denoise</h3>
         <p>Paint over photobombers, power lines, or unwanted clutter with edge-snapping, then let <b>LaMa</b> or <b>Stable Diffusion 1.5</b> fill the background naturally. High-ISO RAW shots are cleaned up using <b>NAFNet</b> neural denoising while preserving highlight headroom and fine texture.</p>
-        <p><b>Zero duplicate master files:</b> Unlike conventional tools that write massive 250 MB <code>-Enhanced-Removed.tif</code> files, OpenLight Studio composites neural patches non-destructively in-place right inside Develop. Adjust exposure, white balance, or denoise strength in real time!</p>
+        <p><b>Zero duplicate master files:</b> Unlike conventional tools that write massive 250 MB <code>-Enhanced-Removed.tif</code> files, Optixel Studio composites neural patches non-destructively in-place right inside Develop. Adjust exposure, white balance, or denoise strength in real time!</p>
         <div class="ai-controls-demo" style="margin-top:14px;display:flex;flex-direction:column;gap:10px">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--card);padding:8px 12px;border-radius:8px;border:1px solid var(--line)">
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:500">
@@ -1078,7 +1098,7 @@ footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
         <button class="btn small" id="termReplay" style="margin-top:6px">↻ Replay</button>
       </div>
       <div class="term">
-        <div class="th"><div class="lights"><i></i><i></i><i></i></div>claude — openlight</div>
+        <div class="th"><div class="lights"><i></i><i></i><i></i></div>claude — optixel</div>
         <pre id="termOut"></pre>
       </div>
     </div>
@@ -1098,7 +1118,7 @@ footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
         <p>Download a release for your platform, or build from source with Node 20+ and stable Rust.</p>
 <pre class="code">npm install
 npm run tauri dev</pre>
-        <p style="margin-top:10px">The catalog lives in <code>~/Library/Application Support/org.openlight.studio/</code>. Set <code>OPENLIGHT_DATA_DIR</code> to use another folder. Release build: <code>npm run tauri build</code>.</p>
+        <p style="margin-top:10px">The catalog lives in <code>~/Library/Application Support/org.optixel.studio/</code>. Set <code>OPTIXEL_DATA_DIR</code> to use another folder. Release build: <code>npm run tauri build</code>.</p>
       </div></div>
 
       <div class="step reveal"><div>
@@ -1110,7 +1130,7 @@ npm run tauri dev</pre>
           <li><b>Cloud storage:</b> WebDAV, S3-compatible, Dropbox or OneDrive in <i>Settings › Locations</i>. Keys go to the OS keychain, never <code>settings.json</code>.</li>
           <li><b>Immich:</b> server URL + an API key. <b>Google Photos:</b> Pick photos… through the Picker API.</li>
         </ul>
-<pre class="code">openlight-studio --import ~/Pictures/Iceland   # headless, recursive</pre>
+<pre class="code">optixel-studio --import ~/Pictures/Iceland   # headless, recursive</pre>
       </div></div>
 
       <div class="step reveal"><div>
@@ -1147,10 +1167,10 @@ make it moody, keep the sky detail</pre>
       <div class="step reveal"><div>
         <h3>Connect an agent</h3>
         <p>The <b>Agent &amp; MCP</b> tab shows the bearer token and copy-ready configs. The green <b>MCP</b> dot in the title bar means the server is running.</p>
-<pre class="code">claude mcp add --transport http openlight http://127.0.0.1:41920/mcp \
+<pre class="code">claude mcp add --transport http optixel http://127.0.0.1:41920/mcp \
   --header "Authorization: Bearer &lt;token&gt;"</pre>
         <p style="margin-top:10px">Or over stdio — it forwards to the running app, or edits the catalog headless when the app is closed:</p>
-<pre class="code">openlight-studio --mcp-stdio</pre>
+<pre class="code">optixel-studio --mcp-stdio</pre>
       </div></div>
     </div>
 
@@ -1197,7 +1217,7 @@ make it moody, keep the sky detail</pre>
 <section id="promo">
   <div class="wrap">
     <p class="eyebrow reveal">Promo guideline</p>
-    <h2 class="reveal">How to show OpenLight to the world.</h2>
+    <h2 class="reveal">How to show Optixel to the world.</h2>
     <p class="lead reveal">A small press kit: brand, voice, the screens to capture, ready-made formats and copy, and a launch checklist.</p>
 
     <div class="sub reveal">
@@ -1207,17 +1227,17 @@ make it moody, keep the sky detail</pre>
         <div class="box">
           <h3>Logo</h3>
           <div class="logo-row">
-            <div class="logo-tile dark"><img src="icon.png" alt="OpenLight icon on dark"></div>
-            <div class="logo-tile light"><img src="icon.png" alt="OpenLight icon on light"></div>
-            <div class="logo-tile brandbg"><img src="icon.png" alt="OpenLight icon on brand gradient"></div>
+            <div class="logo-tile dark"><img src="icon.png" alt="Optixel icon on dark"></div>
+            <div class="logo-tile light"><img src="icon.png" alt="Optixel icon on light"></div>
+            <div class="logo-tile brandbg"><img src="icon.png" alt="Optixel icon on brand gradient"></div>
           </div>
           <p style="color:var(--muted);font-size:14px;margin-top:14px"><a href="icon.png" download>Download icon.png</a> (512 × 512). Full set in <code>src-tauri/icons/</code>.</p>
         </div>
         <div class="box">
           <h3>Type &amp; name</h3>
-          <p style="color:var(--muted);font-size:14.5px">Write <b style="color:var(--text)">OpenLight Studio</b> — one word "OpenLight", capital L. Short form: <b style="color:var(--text)">OpenLight</b>. Never "Open Light" or "Openlight".</p>
+          <p style="color:var(--muted);font-size:14.5px">Write <b style="color:var(--text)">Optixel Studio</b> — one word "Optixel". Short form: <b style="color:var(--text)">Optixel</b>. Never "Opti Pixel" or "Optix".</p>
           <p style="color:var(--muted);font-size:14.5px;margin-top:10px">Headlines in a system sans (SF Pro, Segoe UI, Inter) at bold weight, tight tracking. Code, tool names and shortcuts in a monospace.</p>
-          <p style="margin-top:14px;font-size:26px;font-weight:800;letter-spacing:-.02em">Aa <span class="grad">OpenLight</span> <span style="font:500 18px var(--mono);color:var(--muted)">auto_run()</span></p>
+          <p style="margin-top:14px;font-size:26px;font-weight:800;letter-spacing:-.02em">Aa <span class="grad">Optixel</span> <span style="font:500 18px var(--mono);color:var(--muted)">auto_run()</span></p>
         </div>
       </div>
       <div class="swatches" id="swatches">
@@ -1288,15 +1308,15 @@ make it moody, keep the sky detail</pre>
       <p>One idea per image: a single screen, one headline of six words or fewer, the logo. Keep text out of the outer 10% so platforms don't crop it.</p>
       <div class="formats">
         <div class="fmt">
-          <div class="card-og"><div class="l"><div class="b"><img src="icon.png" alt="">OpenLight Studio</div><h4>The RAW editor your <span class="grad">AI agent</span> can drive.</h4></div><div class="photo"><svg><use href="#scene"/></svg></div></div>
+          <div class="card-og"><div class="l"><div class="b"><img src="icon.png" alt="">Optixel Studio</div><h4>The RAW editor your <span class="grad">AI agent</span> can drive.</h4></div><div class="photo"><svg><use href="#scene"/></svg></div></div>
           <p>1200 × 630 · Open Graph, X, LinkedIn, HN</p>
         </div>
         <div class="fmt">
-          <div class="card-sq"><div class="b"><img src="icon.png" alt="">OpenLight</div><h4>Click the castle. <span class="grad">Get a mask.</span></h4><div class="photo"><svg><use href="#scene"/></svg></div></div>
+          <div class="card-sq"><div class="b"><img src="icon.png" alt="">Optixel</div><h4>Click the castle. <span class="grad">Get a mask.</span></h4><div class="photo"><svg><use href="#scene"/></svg></div></div>
           <p>1080 × 1080 · Instagram, Mastodon</p>
         </div>
         <div class="fmt">
-          <div class="card-st"><div class="b"><img src="icon.png" alt="">OpenLight</div><h4>Cull 486 photos in <span class="grad">one prompt.</span></h4><div class="photo"><svg><use href="#scene"/></svg></div></div>
+          <div class="card-st"><div class="b"><img src="icon.png" alt="">Optixel</div><h4>Cull 486 photos in <span class="grad">one prompt.</span></h4><div class="photo"><svg><use href="#scene"/></svg></div></div>
           <p>1080 × 1920 · Stories, Reels, Shorts</p>
         </div>
       </div>
@@ -1306,13 +1326,13 @@ make it moody, keep the sky detail</pre>
       <h3>5 · Ready-to-post copy</h3>
       <p>Pair each with screen 03 or a 20–40 s screen recording of the agent demo.</p>
       <div class="posts">
-        <div class="post"><h4>X / Bluesky / Threads</h4><p>OpenLight Studio is an open-source RAW editor with a built-in MCP server.
+        <div class="post"><h4>X / Bluesky / Threads</h4><p>Optixel Studio is an open-source RAW editor with a built-in MCP server.
 
 Connect Claude, then: "cull the Iceland shoot, grade the picks for landscape, export for Immich." Every step is undoable.
 
 MIT · macOS / Windows / Linux
-github.com/rcwkan/openlight-studio</p><button class="copy">Copy</button></div>
-        <div class="post"><h4>Show HN</h4><p>Show HN: OpenLight Studio – an open-source RAW editor that AI agents can drive over MCP
+github.com/rcwkan/optixel-studio</p><button class="copy">Copy</button></div>
+        <div class="post"><h4>Show HN</h4><p>Show HN: Optixel Studio – an open-source RAW editor that AI agents can drive over MCP
 
 Tauri + Rust, one linear Rec.2020 pipeline for viewport, previews and export, so the agent sees exactly what you see. Folders, NAS, S3, Immich and Google Photos browsed in place. Non-destructive, local-first, MIT.</p><button class="copy">Copy</button></div>
         <div class="post"><h4>Reddit · r/photography, r/selfhosted</h4><p>I built a free, open-source Lightroom-style editor that works with Immich in place: ratings sync both ways, edits save as a stack on top of the original, and an Auto function culls a whole album (sharpness on the subject, bursts, exposure). Feedback welcome.</p><button class="copy">Copy</button></div>
@@ -1361,16 +1381,16 @@ Tauri + Rust, one linear Rec.2020 pipeline for viewport, previews and export, so
     <h2 class="reveal">Bring your photos. <span class="grad">Bring your agent.</span></h2>
     <p class="lead reveal" style="margin:0 auto 30px">Free and open source under the MIT License.</p>
     <div class="cta reveal">
-      <a class="btn primary" href="https://github.com/rcwkan/openlight-studio/releases">⬇ Download</a>
-      <a class="btn" href="https://github.com/rcwkan/openlight-studio">★ Star on GitHub</a>
+      <a class="btn primary" href="https://github.com/rcwkan/optixel-studio/releases">⬇ Download</a>
+      <a class="btn" href="https://github.com/rcwkan/optixel-studio">★ Star on GitHub</a>
     </div>
   </div>
 </section>
 
 <footer>
   <div class="wrap">
-    <span>© 2026 OpenLight Studio contributors · MIT License · Demo media: <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noopener">CC0 Public Domain</a></span>
-    <span><a href="https://github.com/rcwkan/openlight-studio">GitHub</a> · <a href="https://github.com/rcwkan/openlight-studio/blob/main/html/MEDIA_CREDITS.md">Media Credits</a> · <a href="https://github.com/rcwkan/openlight-studio/blob/main/SECURITY.md">Security</a> · <a href="#top">Back to top ↑</a></span>
+    <span>© 2026 Optixel Studio contributors · MIT License · Demo media: <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noopener">CC0 Public Domain</a></span>
+    <span><a href="https://github.com/rcwkan/optixel-studio">GitHub</a> · <a href="https://github.com/rcwkan/optixel-studio/blob/main/html/MEDIA_CREDITS.md">Media Credits</a> · <a href="https://github.com/rcwkan/optixel-studio/blob/main/SECURITY.md">Security</a> · <a href="#top">Back to top ↑</a></span>
   </div>
 </footer>
 
@@ -1403,13 +1423,13 @@ function applyTheme(theme, save = false) {
     themeToggle.setAttribute("title", title);
   }
   if (save) {
-    try { localStorage.setItem("openlight-theme", isLight ? "light" : "dark"); } catch (e) {}
+    try { localStorage.setItem("optixel-theme", isLight ? "light" : "dark"); } catch (e) {}
   }
 }
 
 // Initial theme sync
 try {
-  const savedTheme = localStorage.getItem("openlight-theme");
+  const savedTheme = localStorage.getItem("optixel-theme");
   if (savedTheme === "light" || savedTheme === "dark") {
     applyTheme(savedTheme, false);
   } else {
@@ -1430,7 +1450,7 @@ if (themeToggle) {
 if (window.matchMedia) {
   window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", (e) => {
     try {
-      if (!localStorage.getItem("openlight-theme")) {
+      if (!localStorage.getItem("optixel-theme")) {
         applyTheme(e.matches ? "light" : "dark", false);
       }
     } catch (err) {}
@@ -1745,15 +1765,15 @@ $$(".mini-grid").forEach((g, gi) => {
 const SCRIPT = [
   ['<span class="p">›</span> ', "cull the Iceland 2026 shoot, grade the picks for landscape, and export them for Immich", 18],
   ["\n\n", "", 0],
-  ['<span class="t">⏺ openlight · catalog_query</span>(folder: "Iceland 2026")\n', "", 400],
+  ['<span class="t">⏺ optixel · catalog_query</span>(folder: "Iceland 2026")\n', "", 400],
   ['  <span class="ok">⎿</span> 486 photos\n\n', "", 300],
-  ['<span class="t">⏺ openlight · auto_run</span>(function: "catalog_culling", reject_blurry: true)\n', "", 500],
+  ['<span class="t">⏺ optixel · auto_run</span>(function: "catalog_culling", reject_blurry: true)\n', "", 500],
   ['  <span class="ok">⎿</span> 61 picks · 42 rejected (blur, clipping) · 383 rated 1–5★\n\n', "", 900],
-  ['<span class="t">⏺ openlight · develop_auto</span>(profile: "Landscape", filter: { flag: "pick" })\n', "", 500],
+  ['<span class="t">⏺ optixel · develop_auto</span>(profile: "Landscape", filter: { flag: "pick" })\n', "", 500],
   ['  <span class="ok">⎿</span> 61 photos edited · 61 history steps\n\n', "", 800],
-  ['<span class="t">⏺ openlight · photo_inspect</span>(id: 1287) <span class="c"># check one result</span>\n', "", 500],
+  ['<span class="t">⏺ optixel · photo_inspect</span>(id: 1287) <span class="c"># check one result</span>\n', "", 500],
   ['  <span class="ok">⎿</span> highlights clipped 0.1% · horizon level ✓\n\n', "", 500],
-  ['<span class="t">⏺ openlight · batch_export</span>(format: "jpeg", color: "display_p3", to: "immich")\n', "", 500],
+  ['<span class="t">⏺ optixel · batch_export</span>(format: "jpeg", color: "display_p3", to: "immich")\n', "", 500],
   ['  <span class="ok">⎿</span> uploaded 61 · stacked on originals\n\n', "", 1000],
   ['<span class="a">Done.</span> 61 graded picks are in Immich. Every edit is undoable in Develop.\n', "", 0],
 ];

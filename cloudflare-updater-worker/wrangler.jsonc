@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "optixel-updates-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // KV namespace to store validated license keys, tiers, and expiration dates
+  "kv_namespaces": [
+    {
+      "binding": "LICENSES_KV",
+      "id": "YOUR_KV_NAMESPACE_ID",
+      "preview_id": "YOUR_PREVIEW_KV_NAMESPACE_ID"
+    }
+  ],
+
+  // R2 bucket for pre-built signed application updates and metadata manifests
+  "r2_buckets": [
+    {
+      "binding": "RELEASES_BUCKET",
+      "bucket_name": "optixel-releases",
+      "preview_bucket_name": "optixel-releases-dev"
+    }
+  ],
+
+  "vars": {
+    "APP_NAME": "Optixel Studio",
+    "PURCHASE_URL": "https://optixel.makecade.com/#pricing",
+    "MIN_CLIENT_VERSION": "0.3.0",
+    "OFFICIAL_ORIGIN": "https://optixel.makecade.com"
+  }
+}
+

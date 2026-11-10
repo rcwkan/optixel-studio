@@ -1,6 +1,6 @@
 # Chapter 1: Development Environment & Toolchain Setup
 
-This chapter guides developers through setting up a complete, reproducible development environment for OpenLight Studio on macOS, Linux, and Windows.
+This chapter guides developers through setting up a complete, reproducible development environment for Optixel Studio on macOS, Linux, and Windows.
 
 ---
 
@@ -76,16 +76,15 @@ sudo dnf install \
 > For building Linux distributions without installing local GTK development headers, use the containerized build script: `./scripts/build-linux.sh`. This leverages `scripts/Dockerfile.linux` to build `.deb` packages inside an isolated Debian container.
 
 ### 2.3 Windows (x64 / ARM64)
-1. Install **Microsoft Visual Studio C++ Build Tools** (Select "Desktop development with C++").
-2. Ensure **WebView2 Runtime** is installed (pre-installed on Windows 10/11).
-3. Ensure Git Bash or PowerShell 7 is configured.
+1. Ensure **WebView2 Runtime** is installed (pre-installed on Windows 10/11).
+2. Ensure Git Bash or PowerShell 7 is configured.
 
 ---
 
 ## 3. Repository Structure & Scripts
 
 ```
-openlight_studio/
+optixel_studio/
 ├── dist/                      # Compiled frontend static assets (Vite output)
 ├── dist-packages/             # Output installers (.dmg, .app, .deb)
 │   ├── macos/                 # macOS .app bundle and .dmg disk image
@@ -137,11 +136,11 @@ openlight_studio/
 
 ## 4. Environment Variables & Data Directory
 
-OpenLight Studio isolates user data, catalogs, thumbnails, and cache files:
+Optixel Studio isolates user data, catalogs, thumbnails, and cache files:
 
 | Environment Variable | Default Value | Description |
 |---|---|---|
-| `OPENLIGHT_DATA_DIR` | `~/Library/Application Support/org.openlight.studio/` (macOS)<br>`~/.local/share/org.openlight.studio/` (Linux)<br>`%APPDATA%\org.openlight.studio` (Windows) | Root directory containing `catalog.olcat`, `thumbs/`, `settings.json`, `credentials.json`, and `remote/`. |
+| `OPTIXEL_DATA_DIR` | `~/Library/Application Support/org.optixel.studio/` (macOS)<br>`~/.local/share/org.optixel.studio/` (Linux)<br>`%APPDATA%\org.optixel.studio` (Windows) | Root directory containing `catalog.olcat`, `thumbs/`, `settings.json`, `credentials.json`, and `remote/`. |
 | `ANTHROPIC_API_KEY` | *(None / OS Keychain)* | Fallback API key for Anthropic Claude provider. |
 | `GEMINI_API_KEY` | *(None / OS Keychain)* | Fallback API key for Google Gemini API provider. |
 | `OPENAI_API_KEY` | *(None / OS Keychain)* | Fallback API key for OpenAI / compatible endpoints. |
@@ -149,7 +148,7 @@ OpenLight Studio isolates user data, catalogs, thumbnails, and cache files:
 
 ### Data Directory Contents
 ```
-<OPENLIGHT_DATA_DIR>/
+<OPTIXEL_DATA_DIR>/
 ├── catalog.olcat          # SQLite database in WAL mode (DAM metadata & history)
 ├── catalog.olcat-wal      # SQLite Write-Ahead Log
 ├── catalog.olcat-shm      # SQLite shared memory
@@ -169,7 +168,7 @@ OpenLight Studio isolates user data, catalogs, thumbnails, and cache files:
 ### Step 1: Clone and Install NPM Dependencies
 ```bash
 git clone <repository-url>
-cd openlight_studio
+cd optixel_studio
 npm install
 ```
 

@@ -10,7 +10,7 @@ The backend is built as a hybrid binary/library crate configured in [`src-tauri/
 
 ```toml
 [lib]
-name = "openlight_studio_lib"
+name = "optixel_studio_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [profile.release]
@@ -28,7 +28,7 @@ opt-level = 3
 ```
 
 > [!IMPORTANT]
-> Unoptimized pixel processing in debug mode (`opt-level = 0`) runs at unacceptable latency for RAW demosaicing and 3D color lookup. OpenLight Studio sets `opt-level = 2` even in development builds to guarantee near-instantaneous slider scrubbing and fast test execution.
+> Unoptimized pixel processing in debug mode (`opt-level = 0`) runs at unacceptable latency for RAW demosaicing and 3D color lookup. Optixel Studio sets `opt-level = 2` even in development builds to guarantee near-instantaneous slider scrubbing and fast test execution.
 
 ---
 
@@ -60,7 +60,7 @@ src-tauri/src/
   * `auto_start_job`, `auto_cancel_job`.
   * `storage_get_locations`, `storage_mount_drive`, `storage_duplicate`.
   * `ai_run_agent_prompt`, `mcp_get_token`.
-* **Keychain Management**: Stores sensitive API keys and OAuth tokens in `<OPENLIGHT_DATA_DIR>/credentials.json` with POSIX permissions locked to `0600` (read/write by owner only).
+* **Keychain Management**: Stores sensitive API keys and OAuth tokens in `<OPTIXEL_DATA_DIR>/credentials.json` with POSIX permissions locked to `0600` (read/write by owner only).
 
 ---
 

@@ -68,7 +68,7 @@ pub fn default_providers() -> Vec<Provider> {
         ..Provider::default()
     };
     vec![
-        p("cli:claude", "cli", "Claude CLI", "claude -p {{AGENT_PROMPT}} --mcp-config {{MCP_CONFIG_PATH}} --allowedTools mcp__openlight --max-turns 20 --output-format json", "", ""),
+        p("cli:claude", "cli", "Claude CLI", "claude -p {{AGENT_PROMPT}} --mcp-config {{MCP_CONFIG_PATH}} --allowedTools mcp__optixel --max-turns 20 --output-format json", "", ""),
         p("cli:antigravity", "cli", "Antigravity CLI", "antigravity -p {{AGENT_PROMPT}} --dangerously-skip-permissions", "", ""),
         p("cli:custom", "cli", "Custom CLI agent", "", "", ""),
         p("ollama:qwen2.5vl", "ollama", "Ollama (local)", "", "http://127.0.0.1:11434", "qwen2.5vl:7b"),
@@ -239,7 +239,7 @@ fn provider(core: &Core, id: &str) -> Result<Provider, String> {
 
 fn session_dir(id: i64) -> Result<PathBuf, String> {
     let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("openlight-session-{id}-{ts}"));
+    let dir = std::env::temp_dir().join(format!("optixel-session-{id}-{ts}"));
     std::fs::create_dir_all(&dir).map_err(es)?;
     Ok(dir)
 }
@@ -275,7 +275,7 @@ pub fn trace(core: &Arc<Core>, id: i64, at: [f32; 2], provider_id: &str) -> Resu
     let res = (|| {
         let reply = if p.kind == "cli" {
             let agent = format!(
-                "You are selecting an object in a photo in OpenLight Studio through its MCP server \"openlight\". Photo id: {id}. \
+                "You are selecting an object in a photo in Optixel Studio through its MCP server \"optixel\". Photo id: {id}. \
                  The user clicked at [{x:.4}, {y:.4}] (fractions of the full frame). Call photo_inspect (photo_id \"{id}\", \
                  full_frame true, max_edge 1536, mark [{x:.4}, {y:.4}]): a red ring marks the click. Do not change the photo. {TRACE}"
             );
@@ -336,7 +336,7 @@ fn ask_json(core: &Arc<Core>, id: i64, provider_id: &str, task: &str, schema: &V
     let res = (|| {
         let reply = if p.kind == "cli" {
             let agent = format!(
-                "You are looking at a photo in OpenLight Studio through its MCP server \"openlight\". Photo id: {id}. Call \
+                "You are looking at a photo in Optixel Studio through its MCP server \"optixel\". Photo id: {id}. Call \
                  photo_inspect (photo_id \"{id}\", full_frame true, max_edge 1024) to see it. Do not change the photo. {task} \
                  Reply with only a JSON object matching this schema: {schema}"
             );
@@ -449,10 +449,13 @@ fn run_cli(core: &Arc<Core>, p: &Provider, id: i64, prompt: &str, dir: &PathBuf,
     }
     let snap = snapshot(core, id, dir)?;
     let mcp_config = dir.join("mcp.json");
-    let cfg = json!({ "mcpServers": { "openlight": { "type": "http", "url": url, "headers": { "Authorization": format!("Bearer {token}") } } } });
+    let cfg = json!({ "mcpServers": {
+        "optixel": { "type": "http", "url": url, "headers": { "Authorization": format!("Bearer {token}") } },
+        "openlight": { "type": "http", "url": url, "headers": { "Authorization": format!("Bearer {token}") } }
+    } });
     std::fs::write(&mcp_config, cfg.to_string()).map_err(es)?;
     let agent_prompt = agent.unwrap_or_else(|| format!(
-        "You are editing a photo in OpenLight Studio through its MCP server \"openlight\". Photo id: {id}. \
+        "You are editing a photo in Optixel Studio through its MCP server \"optixel\". Photo id: {id}. \
          A rendered preview is at {} and histogram telemetry at {}. User goal: \"{prompt}\". \
          Call photo_inspect (photo_id \"{id}\", full_frame true) to see the image, apply non-destructive edits with develop_apply_parameters \
          and mask_create_and_edit, then photo_inspect again to verify (for example zero highlight clipping) and iterate if needed. \
@@ -489,6 +492,9 @@ fn run_cli(core: &Arc<Core>, p: &Provider, id: i64, prompt: &str, dir: &PathBuf,
         .args(args)
         .current_dir(&snap.dir)
         .env("PATH", user_path())
+        .env("OPTIXEL_MCP_URL", &url)
+        .env("OPTIXEL_MCP_TOKEN", &token)
+        .env("OPTIXEL_PHOTO_ID", id.to_string())
         .env("OPENLIGHT_MCP_URL", &url)
         .env("OPENLIGHT_MCP_TOKEN", &token)
         .env("OPENLIGHT_PHOTO_ID", id.to_string())
@@ -657,7 +663,7 @@ fn call_model(p: &Provider, system: &str, user: &str, image_b64: &str, schema: &
 
 fn run_http(core: &Arc<Core>, p: &Provider, id: i64, prompt: &str, dir: &PathBuf) -> Result<String, String> {
     let system = format!(
-        "You are an expert photo retoucher controlling OpenLight Studio, a non-destructive RAW editor. You see the current \
+        "You are an expert photo retoucher controlling Optixel Studio, a non-destructive RAW editor. You see the current \
          rendered photo, its histogram telemetry and its full edit state. Decide parameter changes that achieve the user's goal. \
          global_parameter_patch contains ABSOLUTE values for only the parameters you change (omit everything else). \
          The image is the full uncropped frame; coordinates are [x, y] fractions of it, (0,0) top-left. To select an object or \

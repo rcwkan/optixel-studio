@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OpenLight Studio",
-  "version": "0.2.2",
-  "identifier": "org.openlight.studio",
+  "productName": "Optixel Studio",
+  "version": "0.3.0",
+  "identifier": "org.optixel.studio",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "OpenLight Studio",
+        "title": "Optixel Studio",
         "width": 1480,
         "height": 920,
         "minWidth": 1024,
@@ -41,5 +41,14 @@
       "signingIdentity": "-"
     }
   },
-  "mainBinaryName": "openlight-studio"
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE3RjQyNjg4MzIyREI5N0EKUlVSNndHUkZRNnFpNDQxd1Z4Nm5sR1d0NWtiYVdHQnN0L0t1MGFvdDJKWGZCM1pnSTc0OGtBNjUK",
+      "endpoints": [
+        "https://updates.optixel.studio/v1/update/{{target}}/{{current_version}}",
+        "https://optixel-studio-updates.workers.dev/v1/update/{{target}}/{{current_version}}"
+      ]
+    }
+  },
+  "mainBinaryName": "optixel-studio"
 }

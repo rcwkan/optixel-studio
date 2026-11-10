@@ -9,6 +9,8 @@ mod enhance;
 mod faces;
 mod faceswap;
 mod gpu;
+mod icc;
+mod libraw;
 mod mcp;
 mod moebius;
 mod perspective;
@@ -18,6 +20,7 @@ mod sdfill;
 mod storage;
 mod updater;
 mod vision;
+mod xmp;
 
 use develop::{Develop, Img, Opts, es};
 use serde::{Deserialize, Serialize};
@@ -30,7 +33,7 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 
-pub const APP_ID: &str = "org.openlight.studio";
+pub const APP_ID: &str = "org.optixel.studio";
 /// Long edge of the in-memory develop proxy.
 pub const PROXY_EDGE: u32 = 1600;
 
@@ -72,6 +75,9 @@ pub struct Settings {
     /// Automatically check for updates on startup.
     #[serde(default = "default_true")]
     pub auto_check_updates: bool,
+    /// Commercial license key for pre-built binaries and automatic update entitlements.
+    #[serde(default)]
+    pub license_key: Option<String>,
     /// People: find and group faces (ArcFace), scan new imports, search by person.
     pub faces_enabled: bool,
 }
@@ -98,6 +104,7 @@ impl Default for Settings {
             network_drives: vec![],
             clouds: vec![],
             auto_check_updates: true,
+            license_key: None,
             faces_enabled: false,
         }
     }
@@ -128,7 +135,7 @@ pub fn new_token() -> String {
 pub fn default_data_dir() -> PathBuf {
     #[cfg(test)]
     {
-        std::env::temp_dir().join("openlight-test-default")
+        std::env::temp_dir().join("optixel-test-default")
     }
     #[cfg(not(test))]
     {
@@ -140,7 +147,7 @@ pub fn default_data_dir() -> PathBuf {
 pub fn pointer_file() -> PathBuf {
     #[cfg(test)]
     {
-        std::env::temp_dir().join("openlight-test-default").join("storage_location.txt")
+        std::env::temp_dir().join("optixel-test-default").join("storage_location.txt")
     }
     #[cfg(not(test))]
     {
@@ -150,7 +157,7 @@ pub fn pointer_file() -> PathBuf {
 
 /// Check if a custom storage directory is configured via environment variable or pointer file.
 pub fn configured_data_dir() -> Option<PathBuf> {
-    if let Some(custom) = std::env::var_os("OPENLIGHT_DATA_DIR") {
+    if let Some(custom) = std::env::var_os("OPTIXEL_DATA_DIR").or_else(|| std::env::var_os("OPENLIGHT_DATA_DIR")) {
         let p = PathBuf::from(custom);
         if p.is_dir() {
             return Some(p);
@@ -205,7 +212,7 @@ pub fn configured_data_dir() -> Option<PathBuf> {
     }
 }
 
-/// Catalog location; `OPENLIGHT_DATA_DIR` selects another catalog folder.
+/// Catalog location; `OPTIXEL_DATA_DIR` (or `OPENLIGHT_DATA_DIR`) selects another catalog folder.
 pub fn data_dir() -> PathBuf {
     configured_data_dir().unwrap_or_else(default_data_dir)
 }
@@ -270,9 +277,9 @@ pub struct Core {
     pub mcp_status: Mutex<String>,
     /// Cancel flags of the running jobs (auto functions, duplicating), by job id.
     pub jobs: Mutex<HashMap<String, Arc<AtomicBool>>>,
-    cache: Mutex<Vec<(String, Arc<Img>)>>,
+    cache: Mutex<Vec<((String, develop::Raw), Arc<Img>)>>,
     /// The one full-size decode kept for zoomed views (24 MP is ~300 MB of floats).
-    full: Mutex<Option<(String, Arc<Img>)>>,
+    full: Mutex<Option<((String, develop::Raw), Arc<Img>)>>,
     // ponytail: one full-size decode at a time bounds memory; a decode pool if imports/exports need throughput
     decode_lock: Mutex<()>,
     app: OnceLock<tauri::AppHandle>,
@@ -380,31 +387,44 @@ impl Core {
 
     /// Full decode of a file, one at a time (full-size decodes are memory-heavy).
     pub fn decode(&self, file: &Path, max_edge: Option<u32>) -> Result<Img, String> {
+        self.decode_with(file, max_edge, &develop::Raw::default())
+    }
+
+    pub fn decode_with(&self, file: &Path, max_edge: Option<u32>, raw: &develop::Raw) -> Result<Img, String> {
         let _g = self.decode_lock.lock().unwrap();
-        develop::load(file, max_edge)
+        develop::load_with(file, max_edge, raw)
     }
 
     /// Decoded working-space proxy, cached for the last few files.
     pub fn proxy(&self, path: &str) -> Result<Arc<Img>, String> {
-        if let Some((_, img)) = self.cache.lock().unwrap().iter().find(|(p, _)| p == path) {
+        self.proxy_with(path, &develop::Raw::default())
+    }
+
+    pub fn proxy_with(&self, path: &str, raw: &develop::Raw) -> Result<Arc<Img>, String> {
+        if let Some((_, img)) = self.cache.lock().unwrap().iter().find(|((p, r), _)| p == path && r == raw) {
             return Ok(img.clone());
         }
         let file = self.local_file(path)?;
-        let img = Arc::new(self.decode(&file, Some(PROXY_EDGE))?);
+        let img = Arc::new(self.decode_with(&file, Some(PROXY_EDGE), raw)?);
         let mut c = self.cache.lock().unwrap();
-        c.retain(|(p, _)| p != path);
-        c.insert(0, (path.to_string(), img.clone()));
+        let key = (path.to_string(), raw.clone());
+        c.retain(|(k, _)| k != &key);
+        c.insert(0, (key, img.clone()));
         c.truncate(12);
         Ok(img)
     }
 
     /// Full-size working image of a photo, for views zoomed past the proxy.
     pub fn full_image(&self, path: &str) -> Result<Arc<Img>, String> {
-        if let Some((_, img)) = self.full.lock().unwrap().as_ref().filter(|(p, _)| p == path) {
+        self.full_image_with(path, &develop::Raw::default())
+    }
+
+    pub fn full_image_with(&self, path: &str, raw: &develop::Raw) -> Result<Arc<Img>, String> {
+        if let Some((_, img)) = self.full.lock().unwrap().as_ref().filter(|((p, r), _)| p == path && r == raw) {
             return Ok(img.clone());
         }
-        let img = Arc::new(self.decode(&self.local_file(path)?, None)?);
-        *self.full.lock().unwrap() = Some((path.to_string(), img.clone()));
+        let img = Arc::new(self.decode_with(&self.local_file(path)?, None, raw)?);
+        *self.full.lock().unwrap() = Some(((path.to_string(), raw.clone()), img.clone()));
         Ok(img)
     }
 
@@ -422,7 +442,7 @@ impl Core {
         if opts.ai_cache_dir.is_none() {
             opts.ai_cache_dir = Some(self.ai_cache_dir(id));
         }
-        Ok(develop::render(&*self.proxy(&p.path)?, &d, &opts))
+        Ok(develop::render(&*self.proxy_with(&p.path, &d.raw)?, &d, &opts))
     }
 
     /// Persist an edit as one history step (one undo = one GUI gesture or one AI/MCP call).
@@ -449,7 +469,7 @@ impl Core {
         let (core, d) = (self.clone(), d.clone());
         std::thread::spawn(move || {
             let res = (|| -> Result<(), String> {
-                let out = develop::render(&*core.proxy(&photo.path)?, &d, &Opts { ai_cache_dir: Some(core.ai_cache_dir(id)), ..Default::default() });
+                let out = develop::render(&*core.proxy_with(&photo.path, &d.raw)?, &d, &Opts { ai_cache_dir: Some(core.ai_cache_dir(id)), ..Default::default() });
                 let thumb = catalog::to_dynamic(&out).thumbnail(catalog::THUMB, catalog::THUMB);
                 catalog::write_jpeg(&core.thumb_path(id), &thumb)?;
                 core.db().execute("UPDATE photos SET thumb_v = thumb_v + 1 WHERE id = ?", [id]).map_err(es)?;
@@ -574,7 +594,7 @@ impl Core {
         for (i, &id) in ids.iter().enumerate() {
             let p = self.photo(id)?;
             let d = self.develop(id)?;
-            let src = self.decode(&self.local_file(&p.path)?, max_edge)?;
+            let src = self.decode_with(&self.local_file(&p.path)?, max_edge, &d.raw)?;
             let opts = Opts { ai_cache_dir: Some(self.ai_cache_dir(id)), ..Default::default() };
             let img = develop::render(&src, &d, &opts);
             let stem = Path::new(&p.filename).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
@@ -707,14 +727,18 @@ fn default_develop() -> Develop {
     Develop::default()
 }
 
-/// Preview-only overlays: soft-proof gamut (sRGB | DisplayP3 | AdobeRGB) and clipping warnings,
-/// Visualize Spots threshold.
+/// Preview-only overlays: soft-proof gamut (sRGB | DisplayP3 | AdobeRGB | ProPhotoRGB | ACEScg | FineArtMatte | BarytaGloss | custom .icc),
+/// LittleCMS2 rendering intent & black-point compensation, clipping warnings, and Visualize Spots threshold.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct Proof {
     gamut: Option<String>,
     clipping: bool,
     spots: Option<f32>,
+    intent: Option<String>,
+    bpc: Option<bool>,
+    simulate_paper: Option<bool>,
+    gamut_warn: Option<bool>,
 }
 
 /// Binary reply: u32 width, u32 height, 4x256 u32 histogram (R, G, B, luma), RGBA8 pixels.
@@ -723,7 +747,7 @@ struct Proof {
 fn render_preview(core: St, id: i64, develop: Develop, skip_crop: bool, overlay_mask: Option<usize>, full_frame: Option<bool>, proof: Option<Proof>, hires: Option<bool>) -> Result<tauri::ipc::Response, String> {
     let photo = core.photo(id)?;
     let opts = Opts { skip_crop, overlay_mask, full_frame: full_frame.unwrap_or(false), ai_cache_dir: Some(core.ai_cache_dir(id)) };
-    let src = if hires == Some(true) { core.full_image(&photo.path)? } else { core.proxy(&photo.path)? };
+    let src = if hires == Some(true) { core.full_image_with(&photo.path, &develop.raw)? } else { core.proxy_with(&photo.path, &develop.raw)? };
     let mut out = develop::render(&src, &develop, &opts);
     drop(src);
     let mut rgba = develop::to_rgba8(&out);
@@ -733,7 +757,30 @@ fn render_preview(core: St, id: i64, develop: Develop, skip_crop: bool, overlay_
         if let Some(t) = proof.spots {
             develop::visualize_spots(&mut out, t);
         }
-        develop::proof(&mut out, proof.gamut.as_deref(), proof.clipping);
+        if let Some(prof) = proof.gamut.as_deref().filter(|g| !g.is_empty()) {
+            let use_lcms_proof = proof.simulate_paper.unwrap_or(false)
+                || proof.intent.is_some()
+                || matches!(prof, "ProPhotoRGB" | "ACEScg" | "FineArtMatte" | "BarytaGloss")
+                || prof.to_ascii_lowercase().ends_with(".icc")
+                || prof.to_ascii_lowercase().ends_with(".icm");
+            if use_lcms_proof {
+                let custom_dir = core.dir();
+                icc::soft_proof(
+                    &mut out.px,
+                    Some(prof),
+                    proof.intent.as_deref().unwrap_or("perceptual"),
+                    proof.bpc.unwrap_or(true),
+                    proof.simulate_paper.unwrap_or(true),
+                    proof.gamut_warn.unwrap_or(true),
+                    proof.clipping,
+                    Some(&custom_dir),
+                );
+            } else {
+                develop::proof(&mut out, Some(prof), proof.clipping);
+            }
+        } else if proof.clipping {
+            develop::proof(&mut out, None, true);
+        }
         rgba = develop::to_rgba8(&out);
     }
     let mut buf = Vec::with_capacity(8 + 4096 + rgba.len());
@@ -746,6 +793,179 @@ fn render_preview(core: St, id: i64, develop: Develop, skip_crop: bool, overlay_
     }
     buf.extend(rgba);
     Ok(tauri::ipc::Response::new(buf))
+}
+
+/// Inspects a photo's native LibRaw sensor calibration (optical black levels, white point, CFA pattern)
+/// and vendor MakerNotes (active AF points, Eye-AF box, mechanical shutter count, lens/body serials).
+#[tauri::command(async)]
+fn raw_info(core: St, id: i64) -> Result<libraw::RawInfo, String> {
+    let p = core.photo(id)?;
+    let local = core.local_file(&p.path)?;
+    let bytes = fs::read(&local).map_err(es)?;
+    libraw::inspect(&bytes)
+}
+
+/// Computes Real-Time RGB Parade & Luma/Chroma Waveform Scopes (binary reply: u32 scope_w, u32 scope_h,
+/// followed by parade RGBA8 and waveform RGBA8). Uses the AOT SPIR-V GPU compute shader when enabled,
+/// falling back to the multithreaded C++ scope kernel.
+#[tauri::command(async)]
+fn render_scopes(core: St, id: i64, develop: Develop, scope_w: Option<u32>, scope_h: Option<u32>) -> Result<tauri::ipc::Response, String> {
+    let photo = core.photo(id)?;
+    let opts = Opts { skip_crop: false, overlay_mask: None, full_frame: false, ai_cache_dir: Some(core.ai_cache_dir(id)) };
+    let src = core.proxy_with(&photo.path, &develop.raw)?;
+    let out = develop::render(&src, &develop, &opts);
+    drop(src);
+    let rgba = develop::to_rgba8(&out);
+    let sw = scope_w.unwrap_or(288).clamp(64, 768);
+    let sh = scope_h.unwrap_or(120).clamp(48, 512);
+    let (parade, waveform) = gpu::run_scopes(&rgba, out.w as u32, out.h as u32, sw, sh)
+        .unwrap_or_else(|| libraw::compute_scopes_cpu(&rgba, out.w, out.h, sw as usize, sh as usize));
+    let mut buf = Vec::with_capacity(8 + parade.len() + waveform.len());
+    buf.extend(sw.to_le_bytes());
+    buf.extend(sh.to_le_bytes());
+    buf.extend(parade);
+    buf.extend(waveform);
+    Ok(tauri::ipc::Response::new(buf))
+}
+
+/// Lists built-in wide-gamut / soft-proofing ICC profiles and user-imported `.icc` / `.icm` profiles.
+#[tauri::command]
+fn icc_profiles(core: St) -> Vec<icc::IccProfileEntry> {
+    icc::list_profiles(&core.dir())
+}
+
+/// Imports a custom printer/paper/display `.icc` or `.icm` profile into `<data_dir>/icc_profiles/`.
+#[tauri::command(async)]
+fn icc_import_profile(core: St, path: String) -> Result<icc::IccProfileEntry, String> {
+    icc::import_profile(&core.dir(), Path::new(&path))
+}
+
+/// Bidirectional Adobe Lightroom `.xmp` sidecar sync (`mode`: `"read"` | `"write"`).
+#[tauri::command(async)]
+fn xmp_sync(core: St, ids: Vec<i64>, mode: String, copyright: Option<String>, creator: Option<String>) -> Result<Value, String> {
+    let photos = catalog::photos(&core.db(), &ids)?;
+    let mut count = 0usize;
+    for p in &photos {
+        let path = Path::new(&p.path);
+        if !path.exists() {
+            continue;
+        }
+        if mode == "read" {
+            let cur_dev = core.develop(p.id).unwrap_or_default();
+            let Some(side) = xmp::read_adobe_xmp(path, Some(&cur_dev)) else { continue };
+            if let Some(mut cull) = xmp::to_culling(&side) {
+                if !side.keywords.is_empty() {
+                    cull.keywords = Some(catalog::merge_keywords(&p.keywords, &side.keywords));
+                }
+                core.cull(&[p.id], &cull)?;
+            }
+            if side.has_develop_edits {
+                core.commit(p.id, &side.develop, "Import XMP sidecar")?;
+            }
+            count += 1;
+        } else {
+            let dev = core.develop(p.id).unwrap_or_default();
+            xmp::write_adobe_xmp(p, &dev, copyright.as_deref(), creator.as_deref())?;
+            count += 1;
+        }
+    }
+    if mode == "read" && count > 0 {
+        core.emit("catalog-changed", json!({}));
+    }
+    Ok(json!({ "synced": count, "mode": mode }))
+}
+
+/// Lossless JPEG DCT block transform (`rot90`, `rot180`, `rot270`, `hflip`, `vflip`, `transpose`, `transverse`, `crop`).
+#[tauri::command(async)]
+fn jpeg_lossless(core: St, id: i64, op: String, crop: Option<[i32; 4]>) -> Result<Value, String> {
+    let p = core.photo(id)?;
+    let path = Path::new(&p.path);
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if ext != "jpg" && ext != "jpeg" {
+        return Err("Lossless DCT transform requires a JPEG (.jpg/.jpeg) original".into());
+    }
+    let op_str = match op.as_str() {
+        "rotate90" | "rot90" | "90" => "rot90",
+        "rotate180" | "rot180" | "180" => "rot180",
+        "rotate270" | "rot270" | "270" => "rot270",
+        "flip_h" | "hflip" | "horizontal" => "hflip",
+        "flip_v" | "vflip" | "vertical" => "vflip",
+        "transpose" => "transpose",
+        "transverse" => "transverse",
+        "crop" => "crop",
+        _ => return Err(format!("Unsupported lossless JPEG operation '{op}'")),
+    };
+    let jpeg_bytes = fs::read(path).map_err(es)?;
+    let transformed = libraw::jpeg_lossless_transform(&jpeg_bytes, op_str, crop)?;
+    let tmp = path.with_extension("lossless_tmp.jpg");
+    fs::write(&tmp, &transformed).map_err(es)?;
+    fs::rename(&tmp, path).map_err(es)?;
+    core.cache.lock().unwrap().clear();
+    *core.full.lock().unwrap() = None;
+    let dev = core.develop(id).unwrap_or_default();
+    let _ = core.refresh(id, &dev);
+    core.emit("catalog-changed", json!({}));
+    Ok(json!({ "id": id, "op": op, "path": p.path }))
+}
+
+/// Runs native C++ Focus-Peaking & Blink analysis on photo `id` and returns the focus score,
+/// eye openness (EAR), blink flag, and an RGBA8 focus-peaking overlay.
+#[tauri::command(async)]
+fn focus_peaking(core: St, id: i64, threshold: Option<f32>) -> Result<Value, String> {
+    let p = core.photo(id)?;
+    let d = core.develop(id).unwrap_or_default();
+    let opts = Opts { skip_crop: false, overlay_mask: None, full_frame: false, ai_cache_dir: Some(core.ai_cache_dir(id)) };
+    let src = core.proxy_with(&p.path, &d.raw)?;
+    let out = develop::render(&src, &d, &opts);
+    drop(src);
+    let rgba = develop::to_rgba8(&out);
+    let flat_rgb: Vec<f32> = rgba
+        .chunks_exact(4)
+        .flat_map(|c| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0])
+        .collect();
+    let (mask, score, ear, blink) = libraw::focus_peaking_and_blink(&flat_rgb, out.w, out.h, threshold.unwrap_or(0.22), &[]);
+    let mut overlay = vec![0u8; out.w * out.h * 4];
+    for (i, &m) in mask.iter().enumerate() {
+        if m > 16 {
+            overlay[i * 4] = 0;
+            overlay[i * 4 + 1] = 255;
+            overlay[i * 4 + 2] = 180;
+            overlay[i * 4 + 3] = m;
+        }
+    }
+    let png_img = image::RgbaImage::from_raw(out.w as u32, out.h as u32, overlay).ok_or("failed to build peaking image")?;
+    let mut png_bytes = Vec::new();
+    image::DynamicImage::ImageRgba8(png_img)
+        .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+        .map_err(es)?;
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+    Ok(json!({
+        "focus_score": (score * 10.0).round() / 10.0,
+        "eye_openness": (ear * 100.0).round() / 100.0,
+        "blink_detected": blink,
+        "overlay_data_url": format!("data:image/png;base64,{b64}"),
+    }))
+}
+
+/// Generates a 16-bit feathered semantic mask (`subject`, `sky`, or `background`) using the native C++
+/// He et al. Guided Filter and returns metadata + 16-bit PNG data URL.
+#[tauri::command(async)]
+fn semantic_mask_16bit(core: St, id: i64, target: String, feather: Option<f32>) -> Result<Value, String> {
+    let p = core.photo(id)?;
+    let proxy = core.proxy(&p.path)?;
+    let rgb = vision::Rgb::from_working(&proxy, 512);
+    let mask16 = vision::semantic_mask_16bit(&rgb, &target, feather.unwrap_or(20.0))
+        .ok_or_else(|| format!("Could not detect {target} region in photo"))?;
+    let coverage = mask16.iter().filter(|&&v| v > 32768).count() as f32 / mask16.len().max(1) as f32 * 100.0;
+    Ok(json!({
+        "id": id,
+        "target": target,
+        "width": rgb.w,
+        "height": rgb.h,
+        "bit_depth": 16,
+        "coverage_pct": (coverage * 10.0).round() / 10.0,
+    }))
 }
 
 /// Upright: the Transform that `mode` (off | auto | level | vertical | full | guided) gives `develop`.
@@ -921,7 +1141,7 @@ struct ExportReq {
 fn export_photos(core: St, req: ExportReq) -> Result<Vec<String>, String> {
     let export = |folder: &Path| core.export(&req.ids, folder, &req.format, &req.color_space, req.quality.clamp(1, 100), req.max_edge);
     let Some(dest) = &req.upload else { return export(Path::new(&req.folder)) };
-    let tmp = std::env::temp_dir().join(format!("openlight-upload-{}", new_token()));
+    let tmp = std::env::temp_dir().join(format!("optixel-upload-{}", new_token()));
     let res = export(&tmp).and_then(|files| match dest.strip_prefix("cloud:") {
         Some(id) => cloud::upload_files(&core, id, &req.upload_path, &files),
         None => remote::upload(&core, dest, &req.ids, &files),
@@ -1491,9 +1711,10 @@ fn duplicate(core: St, from: storage::Place, to: storage::Place, options: storag
 }
 
 pub fn run() {
-    let core = Arc::new(Core::open(data_dir()).expect("could not open the OpenLight catalog"));
+    let core = Arc::new(Core::open(data_dir()).expect("could not open the Optixel catalog"));
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .menu(app_menu)
         .setup(move |app| {
             let _ = core.app.set(app.handle().clone());
@@ -1521,6 +1742,14 @@ pub fn run() {
             get_develop,
             default_develop,
             render_preview,
+            raw_info,
+            render_scopes,
+            icc_profiles,
+            icc_import_profile,
+            xmp_sync,
+            jpeg_lossless,
+            focus_peaking,
+            semantic_mask_16bit,
             upright,
             ai_align,
             auto_ca,
@@ -1612,18 +1841,19 @@ pub fn run() {
             updater::download_update,
             updater::install_update,
             updater::open_external_url,
+            updater::verify_license_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
-/// `openlight-studio --import <folder>`: headless import into the catalog.
+/// `optixel-studio --import <folder>`: headless import into the catalog.
 pub fn run_import(folder: &str) -> Result<usize, String> {
     let core = Core::open(data_dir())?;
     Ok(catalog::import(&core, Path::new(folder), &|done, total| eprint!("\rthumbnails {done}/{total}"))?.len())
 }
 
-/// `openlight-studio --mcp-stdio`: stdio MCP transport (spec §4.1).
+/// `optixel-studio --mcp-stdio`: stdio MCP transport (spec §4.1).
 pub fn run_mcp_stdio() {
     mcp::run_stdio();
 }
@@ -1633,7 +1863,7 @@ fn app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri:
     use tauri::menu::{AboutMetadata, Menu, MenuItemKind, PredefinedMenuItem};
     let menu = Menu::default(handle)?;
     let about = AboutMetadata {
-        name: Some("OpenLight Studio".into()),
+        name: Some("Optixel Studio".into()),
         version: Some(handle.package_info().version.to_string()),
         authors: Some(vec!["Ross Kan <ross.kan@gmail.com>".into()]),
         comments: Some("Non-destructive RAW processor and photo catalog with a built-in MCP server and a pluggable AI/agent router.".into()),
@@ -1652,7 +1882,7 @@ fn app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri:
         if let MenuItemKind::Submenu(sub) = item {
             if let Some(i) = sub.items()?.iter().position(|it| matches!(it, MenuItemKind::Predefined(p) if p.text().is_ok_and(|t| t.starts_with("About")))) {
                 sub.remove_at(i)?;
-                sub.insert(&PredefinedMenuItem::about(handle, Some("About OpenLight Studio"), Some(about.clone()))?, i)?;
+                sub.insert(&PredefinedMenuItem::about(handle, Some("About Optixel Studio"), Some(about.clone()))?, i)?;
             }
         }
     }

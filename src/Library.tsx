@@ -1429,6 +1429,34 @@ function Metadata(p: Props & { photo: Photo }) {
               >
                 Regenerate thumbnail{p.selected.length > 1 ? `s (${p.selected.length})` : ""}
               </Btn>
+              <Btn
+                onClick={async () => {
+                  const targets = p.selected.length ? p.selected : [ph.id];
+                  await api.xmpSync(targets, "write");
+                }}
+                title="Write Adobe Lightroom .XMP sidecar (ratings, flags, color labels, keywords, develop & crop)"
+              >
+                Write .XMP{p.selected.length > 1 ? ` (${p.selected.length})` : ""}
+              </Btn>
+              <Btn
+                onClick={async () => {
+                  const targets = p.selected.length ? p.selected : [ph.id];
+                  await api.xmpSync(targets, "read");
+                }}
+                title="Import ratings, labels, keywords & edits from Adobe Lightroom .XMP sidecar"
+              >
+                Read .XMP
+              </Btn>
+              {/\.(jpe?g)$/i.test(ph.filename) && (
+                <Btn
+                  onClick={async () => {
+                    await api.jpegLossless(ph.id, "rot90");
+                  }}
+                  title="SIMD Lossless JPEG 90° DCT block rotation (libturbojpeg, zero recompression)"
+                >
+                  Lossless 90° ⟳
+                </Btn>
+              )}
               {/* the ones that take photos away, on their own line under the everyday ones */}
               <div className="mt-1 flex w-full flex-wrap gap-1 border-t border-neutral-800 pt-2">
                 <Btn onClick={p.onMoveToBin} title="Move photo to Bin (can be restored later)" className="text-amber-400 hover:text-amber-300">
@@ -1465,7 +1493,7 @@ export function ExportDialog({ ids, settings, dest: initialDest = "", onClose }:
   const [edge, setEdge] = useState("");
   const [folder, setFolder] = useState(lastFolder);
   const [dest, setDest] = useState(initialDest); // "" = folder
-  const [uploadPath, setUploadPath] = useState("OpenLight exports");
+  const [uploadPath, setUploadPath] = useState("Optixel exports");
   const account = dest.startsWith("cloud:") ? settings?.clouds.find((a) => `cloud:${a.id}` === dest) : undefined;
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
@@ -1520,9 +1548,13 @@ export function ExportDialog({ ids, settings, dest: initialDest = "", onClose }:
           </select>
           <span className="text-neutral-400">Color space</span>
           <select className={field} value={space} onChange={(e) => setSpace(e.target.value)}>
-            <option value="sRGB">sRGB</option>
-            <option value="DisplayP3">Display P3</option>
+            <option value="sRGB">sRGB IEC61966-2.1</option>
+            <option value="DisplayP3">Apple Display P3 / XDR</option>
             <option value="AdobeRGB">Adobe RGB (1998)</option>
+            <option value="ProPhotoRGB">ProPhoto RGB (ROMM D50 Wide-Gamut)</option>
+            <option value="ACEScg" disabled={!hdrOk}>
+              ACEScg (Linear AP1 D60){hdrOk ? "" : " — 16-bit formats only"}
+            </option>
             <option value="Rec2020_HDR" disabled={!hdrOk}>
               Rec. 2020 HDR (PQ){hdrOk ? "" : " — 16-bit formats only"}
             </option>
@@ -1793,7 +1825,7 @@ export function RemoteDialog({ source, settings, setSettings, onClose }: { sourc
               {source === "apple" &&
                 "Connect your Apple Photos Library (.photoslibrary package) or iCloud Photos sync directory. Photos and RAW originals are indexed non-destructively; exports can be saved directly back."}
               {source === "amazon" &&
-                "Connect your Amazon Photos or Amazon Drive local synchronization directory. OpenLight indexes your full-resolution photos and RAWs; edits can be uploaded back."}
+                "Connect your Amazon Photos or Amazon Drive local synchronization directory. Optixel indexes your full-resolution photos and RAWs; edits can be uploaded back."}
               {source === "adobe" &&
                 "Connect your Adobe Creative Cloud Files or Lightroom photography synchronization folder. Changes and exported photos automatically sync across Creative Cloud apps."}
             </p>
@@ -1822,7 +1854,7 @@ export function RemoteDialog({ source, settings, setSettings, onClose }: { sourc
             )}
             {source === "adobe" && (
               <p>
-                Connected to <span className="font-mono text-neutral-100">{settings.adobe_cloud_path}</span>. Synced photos appear directly in OpenLight Studio, and exports sync with Lightroom & Creative Cloud.
+                Connected to <span className="font-mono text-neutral-100">{settings.adobe_cloud_path}</span>. Synced photos appear directly in Optixel Studio, and exports sync with Lightroom & Creative Cloud.
               </p>
             )}
           </div>

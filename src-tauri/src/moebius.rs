@@ -69,7 +69,7 @@ fn open_session(env: &ort::environment::Environment, path: &Path, key: &str, gpu
     let fail = |e: String| format!("could not load {}: {e}", path.display());
     let try_open = |use_gpu: bool| -> Result<Session, String> {
         let mut b = Session::builder(env).map_err(|e| fail(e.to_string()))?;
-        if use_gpu && std::env::var_os("OPENLIGHT_AI_CPU").is_none() {
+        if use_gpu && std::env::var_os("OPTIXEL_AI_CPU").or_else(|| std::env::var_os("OPENLIGHT_AI_CPU")).is_none() {
             b = b.with_execution_providers([crate::aimodel::accel(key)]).map_err(|e| fail(e.to_string()))?;
         } else {
             b = b.with_auto_device(ort::session::builder::AutoDevicePolicy::PreferCPU).map_err(|e| fail(e.to_string()))?;

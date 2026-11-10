@@ -705,7 +705,7 @@ function Usage({ onSettingsChanged, onGoToAiModels }: { onSettingsChanged: () =>
       const selected = await open({
         directory: true,
         multiple: false,
-        title: "Select New Storage Location for OpenLight Studio",
+        title: "Select New Storage Location for Optixel Studio",
       });
       if (!selected || typeof selected !== "string") return;
       const check = await api.validateStorageLocation(selected);
@@ -1156,7 +1156,7 @@ function Usage({ onSettingsChanged, onGoToAiModels }: { onSettingsChanged: () =>
           )}
 
           <p className="mt-3 text-[11px] text-neutral-500">
-            Not counted above: your photo files, {size(own.reduce((n, f) => n + f.bytes, 0))} in {own.length} folder(s). OpenLight edits them in place and never copies them.
+            Not counted above: your photo files, {size(own.reduce((n, f) => n + f.bytes, 0))} in {own.length} folder(s). Optixel edits them in place and never copies them.
           </p>
         </section>
 
@@ -1786,7 +1786,7 @@ function Usage({ onSettingsChanged, onGoToAiModels }: { onSettingsChanged: () =>
                     Copying: {relocating.file} ({size(relocating.done_bytes)} of {size(relocating.total_bytes)})
                   </p>
                 )}
-                <p className="text-[10px] text-sky-400/80">Please keep OpenLight Studio open while switching storage.</p>
+                <p className="text-[10px] text-sky-400/80">Please keep Optixel Studio open while switching storage.</p>
               </div>
             ) : (
               <div className="space-y-3">
@@ -1932,7 +1932,7 @@ function About({
   useEffect(() => void getVersion().then(setVersion, () => {}), []);
 
   const openReleases = () => {
-    const url = "https://github.com/rcwkan/openlight-studio/releases";
+    const url = "https://github.com/rcwkan/optixel-studio/releases";
     api.openExternalUrl(url).catch(() => window.open(url, "_blank"));
   };
 
@@ -1941,7 +1941,7 @@ function About({
       <div className="flex w-[520px] flex-col gap-4">
         <section className={card}>
           <h3 className={heading}>App info</h3>
-          <p className="text-[15px] font-semibold text-neutral-100">OpenLight Studio</p>
+          <p className="text-[15px] font-semibold text-neutral-100">Optixel Studio</p>
           <p className="text-neutral-400">Version {version || "—"}</p>
           <p className="mt-2 text-neutral-300">Non-destructive RAW processor and photo catalog with a built-in MCP server and a pluggable AI/agent router.</p>
         </section>
@@ -2017,7 +2017,7 @@ function About({
         <section className={card}>
           <h3 className={heading}>Disclaimer</h3>
           <p className="text-neutral-300">
-            OpenLight Studio is provided "as is", without warranty of any kind, express or implied. The developer is not liable for any loss of or damage to
+            Optixel Studio is provided "as is", without warranty of any kind, express or implied. The developer is not liable for any loss of or damage to
             photos, data or equipment arising from its use. Edits are non-destructive, but always keep backups of your originals. AI-assisted edits and
             third-party services (Immich, Google Photos, cloud storage, AI providers) are used at your own discretion and subject to their own terms.
           </p>

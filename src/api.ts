@@ -205,6 +205,14 @@ export type Develop = {
   image_rotation: { angle: number; flip_h: boolean; flip_v: boolean };
   /** in the straightened, rotated frame */
   crop: { x: number; y: number; w: number; h: number; angle: number };
+  /** RAW sensor decode & calibration (LibRaw C++ engine, demosaic algorithm, highlight reconstruction, optical black offset, linear sensor denoise) */
+  raw?: {
+    engine: string;
+    demosaic: string;
+    highlights: string;
+    black_offset: number;
+    raw_denoise: number;
+  };
   retouch: Heal[];
   ai_removals?: AiRemoval[];
   ai_denoise?: AiDenoise;
@@ -305,6 +313,7 @@ export type CullSettings = {
   reject_blurry: boolean;
   blur_threshold: number;
   use_subject: boolean;
+  reject_blinks?: boolean;
   reject_exposure: boolean;
   clip_limit: number;
   burst_seconds: number;
@@ -410,8 +419,58 @@ export type RemoteImport = { folder: string; imported: number; skipped: number; 
 export type AppInfo = { data_dir: string; thumbs_dir: string; exe: string | null; mcp_url: string; mcp_status: string };
 export type HistoryEntry = { id: number; label: string; created_at: string; current: boolean };
 export type Rendered = { hist: Uint32Array[]; image: ImageData };
-/** Preview overlays: soft-proof gamut (sRGB | DisplayP3 | AdobeRGB), clipping, Visualize Spots threshold (null = off). */
-export type Proof = { gamut: string | null; clipping: boolean; spots: number | null };
+/** Preview overlays: soft-proof gamut (sRGB | DisplayP3 | AdobeRGB | ProPhotoRGB | ACEScg | FineArtMatte | BarytaGloss | custom .icc), intent, BPC, clipping, Visualize Spots threshold. */
+export type Proof = {
+  gamut: string | null;
+  clipping: boolean;
+  spots: number | null;
+  intent?: string | null;
+  bpc?: boolean;
+  simulate_paper?: boolean;
+  gamut_warn?: boolean;
+};
+export type AfPoint = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  active: boolean;
+  kind: "single" | "eye" | "face" | "zone" | string;
+};
+export type RawInfo = {
+  camera_model: string;
+  vendor: string;
+  cfa_pattern: string;
+  is_xtrans: boolean;
+  raw_width: number;
+  raw_height: number;
+  black_levels: [number, number, number, number];
+  border_black_counts: [number, number, number, number];
+  white_level: number;
+  linear_max: [number, number, number, number];
+  cam_wb: [number, number, number, number];
+  shutter_count: number;
+  lens_serial: string;
+  body_serial: string;
+  focus_distance_m: number;
+  af_points: AfPoint[];
+};
+export type IccProfileEntry = {
+  id: string;
+  label: string;
+  kind: "builtin" | "printer" | "custom" | string;
+  description: string;
+};
+export type ScopesData = {
+  parade: ImageData;
+  waveform: ImageData;
+};
+export type FocusPeakingResult = {
+  focus_score: number;
+  eye_openness: number;
+  blink_detected: boolean;
+  overlay_data_url: string;
+};
 /** upload: send the renders to Immich / Google Photos / `cloud:<account id>` (into `upload_path`) instead of keeping them in `folder` */
 export type ExportReq = { ids: number[]; folder: string; format: string; color_space: string; quality: number; max_edge: number | null; upload?: string | null; upload_path?: string };
 export type CleanUp = "thumbs" | "originals" | "immich_albums" | "cloud" | "ai_models" | "ai_cache" | "missing" | "history" | "compact" | "all";
@@ -502,6 +561,16 @@ function parseRender(buf: ArrayBuffer): Rendered {
   return { hist, image: new ImageData(new Uint8ClampedArray(buf, 8 + 4096, w * h * 4), w, h) };
 }
 
+function parseScopes(buf: ArrayBuffer): ScopesData {
+  const dv = new DataView(buf);
+  const sw = dv.getUint32(0, true);
+  const sh = dv.getUint32(4, true);
+  const byteLen = sw * sh * 4;
+  const parade = new ImageData(new Uint8ClampedArray(buf, 8, byteLen), sw, sh);
+  const waveform = new ImageData(new Uint8ClampedArray(buf, 8 + byteLen, byteLen), sw, sh);
+  return { parade, waveform };
+}
+
 export type AiHardware = { gpu: string | null; vram_mb: number | null; device: string };
 export type AiModel = {
   id: string;
@@ -569,6 +638,30 @@ export const api = {
   /** fullFrame: no crop or straighten, so view coordinates are mask coordinates; hires: the full-size photo instead of the 1600 px proxy */
   render: async (id: number, develop: Develop, skipCrop: boolean, overlayMask: number | null, fullFrame = false, proof: Proof | null = null, hires = false) =>
     parseRender(await invoke<ArrayBuffer>("render_preview", { id, develop, skipCrop, overlayMask, fullFrame, proof, hires })),
+  /** Real-Time RGB Parade & Luma/Chroma Waveform Scopes (AOT SPIR-V GPU compute shader / C++ fallback) */
+  renderScopes: async (id: number, develop: Develop, scopeW = 288, scopeH = 120): Promise<ScopesData> =>
+    parseScopes(await invoke<ArrayBuffer>("render_scopes", { id, develop, scopeW, scopeH })),
+  /** LibRaw C++ sensor optical calibration & MakerNotes (active AF points, Eye-AF, shutter count, lens/body serial) */
+  rawInfo: (id: number) => invoke<RawInfo>("raw_info", { id }),
+  /** LittleCMS2 built-in wide-gamut / printer profiles and user-imported .icc/.icm profiles */
+  iccProfiles: () => invoke<IccProfileEntry[]>("icc_profiles"),
+  iccImportProfile: (path: string) => invoke<IccProfileEntry>("icc_import_profile", { path }),
+  /** Bidirectional Adobe Lightroom .XMP sidecar sync (read / write) */
+  xmpSync: (ids: number[], mode: "read" | "write", copyright?: string, creator?: string) =>
+    invoke<{ synced: number; mode: string }>("xmp_sync", { ids, mode, copyright: copyright ?? null, creator: creator ?? null }),
+  /** SIMD lossless JPEG DCT block transform via libturbojpeg */
+  jpegLossless: (id: number, op: string, crop?: [number, number, number, number]) =>
+    invoke<{ id: number; op: string; path: string }>("jpeg_lossless", { id, op, crop: crop ?? null }),
+  /** Native C++ Focus-Peaking & Blink / EAR scoring */
+  focusPeaking: (id: number, threshold?: number) =>
+    invoke<FocusPeakingResult>("focus_peaking", { id, threshold: threshold ?? null }),
+  /** 16-bit feathered semantic mask (subject, sky, background) via He et al. Guided Filter */
+  semanticMask16Bit: (id: number, target: string, feather?: number) =>
+    invoke<{ id: number; target: string; width: number; height: number; bit_depth: number; coverage_pct: number }>("semantic_mask_16bit", {
+      id,
+      target,
+      feather: feather ?? null,
+    }),
   /** Upright mode: off | auto | level | vertical | full | guided (uses develop.transform.guides) */
   upright: (id: number, develop: Develop, mode: string) => invoke<Develop["transform"]>("upright", { id, develop, mode }),
   /** AI Auto Align using PerspectiveFields (horizontal | vertical | both) */
@@ -673,7 +766,7 @@ export const api = {
   cloudLocalDirs: () => invoke<CloudFolder[]>("cloud_local_dirs"),
   cloudForgetFolder: (id: string, path: string) => invoke<Settings>("cloud_forget_folder", { id, path }),
   duplicate: (from: Place, to: Place, options: DuplicateOptions, job: string) => invoke<DuplicateResult>("duplicate", { from, to, options, job }),
-  /** Check GitHub Releases for the latest version of OpenLight Studio */
+  /** Check for the latest version of Optixel Studio */
   checkForUpdates: () => invoke<UpdateInfo>("check_for_updates"),
   /** Download an update installer asset with progress tracking and SHA-256 verification */
   downloadUpdate: (url: string, filename: string, expectedSha256?: string | null) =>
@@ -792,10 +885,10 @@ export function spline(pts: number[][]): (x: number) => number {
 }
 
 // Folders added with "Add folder" (the roots of the sidebar tree) are remembered per viewer.
-const ROOTS_KEY = "openlight.folderRoots";
+const ROOTS_KEY = "optixel.folderRoots";
 export const loadRoots = (): string[] => {
   try {
-    return JSON.parse(localStorage.getItem(ROOTS_KEY) ?? "[]");
+    return JSON.parse(localStorage.getItem(ROOTS_KEY) ?? localStorage.getItem("openlight.folderRoots") ?? "[]");
   } catch {
     return [];
   }
@@ -811,10 +904,10 @@ const saveRoots = (r: string[]) => {
 export const rememberRoot = (p: string) => saveRoots([...loadRoots().filter((r) => r !== p), p]);
 export const forgetRoot = (p: string) => saveRoots(loadRoots().filter((r) => r !== p));
 
-const LAST_FOLDER_KEY = "openlight.lastFolder";
+const LAST_FOLDER_KEY = "optixel.lastFolder";
 export const loadLastFolder = (): string | null => {
   try {
-    return localStorage.getItem(LAST_FOLDER_KEY);
+    return localStorage.getItem(LAST_FOLDER_KEY) ?? localStorage.getItem("openlight.lastFolder");
   } catch {
     return null;
   }
