@@ -487,12 +487,12 @@ mod tests {
         assert!(a16[31] > 50000);
     }
 
-    /// Set OPENLIGHT_TEST_RAW to a RAW file: every demosaic (including RCD, AMaZE, LMMSE) and highlight
+    /// Set OPTIXEL_TEST_RAW (or OPENLIGHT_TEST_RAW) to a RAW file: every demosaic (including RCD, AMaZE, LMMSE) and highlight
     /// mode decodes it, kept highlights rise above white, proxy comes back at half size, and `inspect`
     /// extracts optical black levels, white level, CFA pattern, and MakerNotes.
     #[test]
     fn develops_a_real_file() {
-        let Some(p) = std::env::var_os("OPENLIGHT_TEST_RAW") else { return };
+        let Some(p) = std::env::var_os("OPTIXEL_TEST_RAW").or_else(|| std::env::var_os("OPENLIGHT_TEST_RAW")) else { return };
         let file = std::fs::read(&p).unwrap();
         let info = super::inspect(&file).unwrap();
         eprintln!(
