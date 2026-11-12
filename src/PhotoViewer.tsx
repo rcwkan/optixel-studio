@@ -818,9 +818,9 @@ export function PhotoViewer({
               )}
               {focusPeaking && (
                 <>
-                  <span className="text-neutral-500">Focus / Blink</span>
+                  <span className="text-neutral-500">{focusPeaking.eye_openness != null ? "Focus / Blink" : focusPeaking.faces > 0 ? "Eye focus" : "Focus"}</span>
                   <span className="text-emerald-300 font-mono">
-                    {focusPeaking.focus_score}% · {focusPeaking.blink_detected ? "⚠ Blink" : "✓ Open"}
+                    {focusPeaking.focus_score}%{focusPeaking.eye_openness != null && (focusPeaking.blink_detected ? " · ⚠ Blink" : " · ✓ Open")}
                   </span>
                 </>
               )}

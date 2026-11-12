@@ -102,7 +102,8 @@ export type LocalAdjust = {
   saturation: number;
 };
 /** `tuning`: develop settings applied on top of the photo inside the mask only (absent = none). */
-export type Mask = { mask_id: string; name: string; enabled: boolean; components: MaskComponent[]; adjustments: LocalAdjust; tuning?: Develop | null };
+/** `invert`: the inverse of the whole selection (everything but the object) */
+export type Mask = { mask_id: string; name: string; enabled: boolean; invert?: boolean; components: MaskComponent[]; adjustments: LocalAdjust; tuning?: Develop | null };
 export type Swatch = { id: string; src_hsl: number[]; shift_hsl: number[]; range_hsl: number[]; falloff: number };
 export type Level = { black: number; gamma: number; white: number; out_black: number; out_white: number };
 /** Selective Color families, in Photoshop's order */
@@ -143,6 +144,8 @@ export type Develop = {
   detail: { sharpening: number; sharpen_radius: number; sharpen_masking: number; color_noise_reduction: number; luminance_noise_reduction: number; luminance_detail: number };
   effects: { vignette: number; vignette_midpoint: number; vignette_feather: number };
   grain: { amount: number; size: number; roughness: number };
+  /** a creative .cube 3D LUT look (a file name in the LUT folder; "" for none), applied last */
+  look: { lut: string; amount: number };
   lens: {
     distortion: number;
     ca_red_cyan: number;
@@ -240,6 +243,9 @@ export type Settings = {
   ai_denoise_model?: string;
   ai_removal_model?: string;
   ai_align_model?: string;
+  /** Segment Anything: SAM 2.1 for click selection, SAM 3 for select by name / Auto masks; empty: best installed */
+  ai_select_model?: string;
+  ai_concept_model?: string;
   mcp_port: number;
   mcp_token: string;
   providers: Provider[];
@@ -466,9 +472,12 @@ export type ScopesData = {
   waveform: ImageData;
 };
 export type FocusPeakingResult = {
+  /** of the eyes when the face scan found faces, else of the frame */
   focus_score: number;
-  eye_openness: number;
-  blink_detected: boolean;
+  faces: number;
+  /** eye aspect ratio of the most closed face, from its landmarks; null without faces or the landmark model */
+  eye_openness: number | null;
+  blink_detected: boolean | null;
   overlay_data_url: string;
 };
 /** upload: send the renders to Immich / Google Photos / `cloud:<account id>` (into `upload_path`) instead of keeping them in `folder` */
@@ -646,6 +655,8 @@ export const api = {
   /** LittleCMS2 built-in wide-gamut / printer profiles and user-imported .icc/.icm profiles */
   iccProfiles: () => invoke<IccProfileEntry[]>("icc_profiles"),
   iccImportProfile: (path: string) => invoke<IccProfileEntry>("icc_import_profile", { path }),
+  lutList: () => invoke<string[]>("lut_list"),
+  lutImport: (path: string) => invoke<string>("lut_import", { path }),
   /** Bidirectional Adobe Lightroom .XMP sidecar sync (read / write) */
   xmpSync: (ids: number[], mode: "read" | "write", copyright?: string, creator?: string) =>
     invoke<{ synced: number; mode: string }>("xmp_sync", { ids, mode, copyright: copyright ?? null, creator: creator ?? null }),
@@ -700,6 +711,12 @@ export const api = {
   setKey: (id: string, key: string) => invoke("set_provider_key", { id, key }),
   aiRun: (id: number, prompt: string, provider: string) => invoke<string>("ai_run", { id, prompt, provider }),
   /** AI selection: each clicked object at (x, y) of the full frame starts its own selection (or subtracts from `mask` on ⌥-click) */
+  /** SAM 2.1 on this computer: the object at (x, y) as a new mask (or taken out of `mask`); `part`: just the clicked part */
+  samSelect: (id: number, x: number, y: number, mask: number | null, subtract: boolean, part: boolean) =>
+    invoke<{ develop: Develop; mask: number }>("sam_select", { id, x, y, mask, subtract, part }),
+  /** SAM 3 on this computer: every instance of `what` ("sky", "person") as one new mask */
+  samSelectConcept: (id: number, what: string, mask: number | null, subtract: boolean, invert = false) =>
+    invoke<{ develop: Develop; mask: number; found: number }>("sam_select_concept", { id, what, mask, subtract, invert }),
   aiSelect: (id: number, x: number, y: number, provider: string, mask: number | null, subtract: boolean) =>
     invoke<{ develop: Develop; mask: number }>("ai_select", { id, x, y, provider, mask, subtract }),
   aiInpaintInplace: (id: number, model: string, strokes: Stroke[], grow: number, prompt: string) =>

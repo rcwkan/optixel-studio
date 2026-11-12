@@ -46,10 +46,22 @@ pub(crate) fn shared<I: Copy + bytemuck::Pod, O: Copy + bytemuck::Pod>(
 
 /// An RGB matrix/shaper profile from primaries `[[x, y]; 3]`, a white and a pure gamma.
 pub(crate) fn rgb_profile(primaries: [[f64; 2]; 3], white: &CIExyY, gamma: f64) -> Result<Profile, String> {
+    with_curve(primaries, white, &ToneCurve::new(gamma))
+}
+
+fn with_curve(primaries: [[f64; 2]; 3], white: &CIExyY, curve: &ToneCurve) -> Result<Profile, String> {
     let p = |[x, y]: [f64; 2]| CIExyY { x, y, Y: 1.0 };
     let tri = CIExyYTRIPLE { Red: p(primaries[0]), Green: p(primaries[1]), Blue: p(primaries[2]) };
-    let curve = ToneCurve::new(gamma);
-    Profile::new_rgb(white, &tri, &[&curve, &curve, &curve]).map_err(|e| format!("ICC: {e}"))
+    Profile::new_rgb(white, &tri, &[curve, curve, curve]).map_err(|e| format!("ICC: {e}"))
+}
+
+/// A simulated paper: its gamut and white, the tone curve lifted at black to the paper's darkest ink
+/// (`dmax`, optical density), so BPC and the soft proof show what a print can't do: a matte's grey blacks.
+fn paper_profile(primaries: [[f64; 2]; 3], white: &CIExyY, gamma: f64, dmax: f64) -> Result<Profile, String> {
+    let k = 10f64.powf(-dmax);
+    // lcms2 type 5, Y = (aX + b)^g + e above d = 0: (1 - k)·X^g + k
+    let curve = ToneCurve::new_parametric(5, &[gamma, (1.0 - k).powf(1.0 / gamma), 0.0, 0.0, 0.0, k, 0.0]).map_err(|e| format!("ICC: {e}"))?;
+    with_curve(primaries, white, &curve)
 }
 
 /// The working space: linear Rec.2020, D65.
@@ -88,8 +100,8 @@ pub fn resolve_profile(name: &str, custom_dir: Option<&Path>) -> Result<Profile,
         "ProPhotoLinear" => Ok(prophoto_profile(true)),
         "ACEScg" => Ok(acescg_profile()),
         "Rec2020Linear" => Ok(working()),
-        "FineArtMatte" => rgb_profile(FINEART_MATTE, &D50_WARM_PAPER, 2.0),
-        "BarytaGloss" => rgb_profile(BARYTA_GLOSS, &D50, 2.15),
+        "FineArtMatte" => paper_profile(FINEART_MATTE, &D50_WARM_PAPER, 2.0, 1.6),
+        "BarytaGloss" => paper_profile(BARYTA_GLOSS, &D50, 2.15, 2.1),
         other => {
             let p = Path::new(other);
             let bytes = if p.is_file() {
@@ -219,31 +231,65 @@ pub fn from_working(px: &[Px], profile_name: &str, custom_dir: Option<&Path>) ->
     Ok((out, icc_bytes))
 }
 
-/// Transform working-space pixels in-place through a 32-bit floating-point ProPhoto RGB or ACEScg
-/// intermediate space (for unclipped extreme highlight/shadow gamut mapping).
-#[allow(dead_code)]
-pub fn convert_working_space(px: &mut [Px], space: &str) -> Result<(), String> {
-    let inter = match space {
-        "ProPhotoRGB" | "prophoto" => prophoto_profile(true),
-        "ACEScg" | "acescg" => acescg_profile(),
-        _ => return Ok(()),
-    };
-    let w = working();
-    let to_inter: Shared<Px, Px> = shared(&w, PixelFormat::RGB_FLT, &inter, PixelFormat::RGB_FLT, Intent::RelativeColorimetric)?;
-    let back: Shared<Px, Px> = shared(&inter, PixelFormat::RGB_FLT, &w, PixelFormat::RGB_FLT, Intent::RelativeColorimetric)?;
-    px.par_chunks_mut(CHUNK).for_each(|c| {
-        to_inter.transform_in_place(c);
-        back.transform_in_place(c);
+/// The colour lcms2 gives out-of-gamut pixels on a gamut-checking transform: the neon warning, in the
+/// working space. Set once for the process (lcms2's alarm codes are global for the global context).
+fn gamut_alarm() -> Px {
+    static SET: std::sync::Once = std::sync::Once::new();
+    let codes = mul(&M709_2020, [0.85, 0.0, 1.0]).map(|v| (v.clamp(0.0, 1.0) * 65535.0).round() as u16);
+    SET.call_once(|| {
+        let mut all = [0u16; 16];
+        all[..3].copy_from_slice(&codes);
+        #[allow(deprecated)]
+        Transform::<Px, Px, GlobalContext, DisallowCache>::set_global_alarm_codes(all);
     });
-    Ok(())
+    codes.map(|c| c as f32 / 65535.0)
 }
 
-/// Interactive Soft-Proofing & Out-of-Gamut / Clipping Warnings powered by LittleCMS2:
-/// - When `simulate_paper` is true and `gamut` names a profile, uses `Transform::new_proofing_context`
-///   with `Flags::SOFT_PROOFING` (and `Flags::BLACKPOINT_COMPENSATION` when `bpc` is true) to simulate
-///   how the printer/paper or target profile renders colors and ink black point on screen.
-/// - When `gamut_warning` is true, highlights out-of-gamut pixels in neon magenta/violet (`[0.85, 0.0, 1.0]`).
-/// - When `clipping` is true, highlights clipped highlights in red and crushed shadows in blue.
+type Proofing = Transform<Px, Px, GlobalContext, DisallowCache>;
+
+/// A proof's transforms: `sim` renders the paper on screen, `chk` paints what it can't print in the alarm
+/// colour (and is otherwise ignored), `black` is the paper's ink black (Y).
+struct Proof {
+    sim: Option<Proofing>,
+    chk: Option<Proofing>,
+    black: f32,
+}
+
+/// The last proof: lcms2 takes ~0.15 s to build a gamut check, and every preview of a proof needs one.
+/// ponytail: one entry; key more if several proofs alternate.
+static LAST_PROOF: std::sync::Mutex<Option<(String, std::sync::Arc<Proof>)>> = std::sync::Mutex::new(None);
+
+fn proof_transforms(name: &str, intent: &str, bpc: bool, simulate: bool, gamut: bool, custom_dir: Option<&Path>) -> Option<std::sync::Arc<Proof>> {
+    // a profile file re-imported under the same name is a new profile
+    let file = [Some(PathBuf::from(name)), custom_dir.map(|d| d.join(name))].into_iter().flatten().find(|p| p.is_file());
+    let stamp = file.and_then(|p| p.metadata().ok()?.modified().ok());
+    let key = format!("{name}|{intent}|{bpc}|{simulate}|{gamut}|{stamp:?}");
+    let mut last = LAST_PROOF.lock().ok()?;
+    if let Some((k, t)) = last.as_ref()
+        && *k == key
+    {
+        return Some(t.clone());
+    }
+    let proof = resolve_profile(name, custom_dir).ok()?;
+    let (w, intent) = (working(), parse_intent(intent));
+    let make = |flags, to_screen| Proofing::new_proofing_context(GlobalContext::new(), &w, PixelFormat::RGB_FLT, &w, PixelFormat::RGB_FLT, &proof, intent, to_screen, flags).ok();
+    let bpc = if bpc { Flags::BLACKPOINT_COMPENSATION } else { Flags::default() };
+    let entry = std::sync::Arc::new(Proof {
+        sim: if simulate { Some(make(Flags::NO_CACHE | Flags::SOFT_PROOFING | bpc, Intent::AbsoluteColorimetric)?) } else { None },
+        chk: if gamut { Some(make(Flags::NO_CACHE | Flags::GAMUT_CHECK, Intent::RelativeColorimetric)?) } else { None },
+        black: proof.detect_destination_black_point(intent).map_or(0.0, |b| b.Y as f32),
+    });
+    *last = Some((key, entry.clone()));
+    Some(entry)
+}
+
+/// Interactive soft-proofing and out-of-gamut / clipping warnings with LittleCMS2:
+/// - `simulate_paper`: the image as the `gamut` profile (printer/paper, or any target) renders it, proof to
+///   screen absolute colorimetric so paper white and ink black show; `bpc` maps black to the ink's black.
+/// - `gamut_warning`: pixels outside the profile's gamut in neon violet. Exact for sRGB, Display P3 and
+///   Adobe RGB; for any other profile (matrix, LUT-based or CMYK) lcms2's own gamut check decides.
+/// - `clipping`: clipped highlights in red and crushed shadows in blue.
+/// Clipping and gamut are judged on the image as rendered, before the paper simulation.
 pub fn soft_proof(
     px: &mut [Px],
     gamut: Option<&str>,
@@ -255,65 +301,34 @@ pub fn soft_proof(
     custom_dir: Option<&Path>,
 ) {
     let prof_name = gamut.unwrap_or("").trim();
-    if prof_name.is_empty() && !clipping {
+    let simulate_paper = simulate_paper && !prof_name.is_empty();
+    let gamut_warning = gamut_warning && !prof_name.is_empty();
+    if !simulate_paper && !gamut_warning && !clipping {
         return;
     }
-
-    // 1. Optional LittleCMS2 soft-proofing simulation (ink black-point compensation + rendering intent)
-    if simulate_paper && !prof_name.is_empty()
-        && let Ok(proof_prof) = resolve_profile(prof_name, custom_dir)
-    {
-        let w = working();
-        let mut flags = Flags::NO_CACHE | Flags::SOFT_PROOFING;
-        if bpc {
-            flags = flags | Flags::BLACKPOINT_COMPENSATION;
-        }
-        let rendering_intent = parse_intent(intent);
-        if let Ok(t) = Transform::<Px, Px, GlobalContext, DisallowCache>::new_proofing_context(
-            GlobalContext::new(),
-            &w,
-            PixelFormat::RGB_FLT,
-            &w,
-            PixelFormat::RGB_FLT,
-            &proof_prof,
-            rendering_intent,
-            Intent::RelativeColorimetric,
-            flags,
-        ) {
-            px.par_chunks_mut(CHUNK).for_each(|c| t.transform_in_place(c));
-        }
-    }
-
-    if !gamut_warning && !clipping {
-        return;
-    }
-
-    // 2. Out-of-gamut detection (via exact matrix for standard spaces or lcms2 round-trip / target check for ICC profiles)
     let std_mat = match prof_name {
         "sRGB" => Some(M2020_709),
         "DisplayP3" => Some(M2020_P3),
         "AdobeRGB" => Some(M2020_ADOBE),
         _ => None,
     };
+    let lcms_gamut = gamut_warning && std_mat.is_none();
+    let alarm = gamut_alarm();
 
-    let custom_xform: Option<Shared<Px, Px>> = if gamut_warning && std_mat.is_none() && !prof_name.is_empty() {
-        resolve_profile(prof_name, custom_dir)
-            .ok()
-            .and_then(|p| shared(&working(), PixelFormat::RGB_FLT, &p, PixelFormat::RGB_FLT, parse_intent(intent)).ok())
-    } else {
-        None
+    let proof = (simulate_paper || lcms_gamut).then(|| proof_transforms(prof_name, intent, bpc, simulate_paper, lcms_gamut, custom_dir)).flatten();
+    let run = |t: &Proofing| {
+        let mut q = px.to_vec();
+        q.par_chunks_mut(CHUNK).for_each(|c| t.transform_in_place(c));
+        q
     };
+    let simulated = proof.as_ref().and_then(|t| t.sim.as_ref()).map(run);
+    let checked = proof.as_ref().and_then(|t| t.chk.as_ref()).map(run);
+    // lcms2's gamut check ignores BPC: with it on, shadows below the ink's black still print (compressed)
+    let ink_black = if bpc { proof.as_ref().map_or(0.0, |t| t.black) } else { 0.0 };
 
-    // High-visibility neon warning colors in linear Rec.2020
     let paint = |c: Px| mul(&M709_2020, c);
     let (red, blue, neon_violet) = (paint([1.0, 0.0, 0.0]), paint([0.0, 0.25, 1.0]), paint([0.85, 0.0, 1.0]));
-    let tol = match prof_name {
-        "FineArtMatte" => 0.025, // matte paper compresses darkest 2.5% Dmax and saturated primaries
-        "BarytaGloss" => 0.008,
-        _ => 1e-3,
-    };
-
-    px.par_iter_mut().for_each(|p| {
+    px.par_iter_mut().enumerate().for_each(|(i, p)| {
         let s = mul(&M2020_709, *p);
         if clipping && s.iter().any(|&v| v >= 1.0) {
             *p = red;
@@ -323,21 +338,19 @@ pub fn soft_proof(
             *p = blue;
             return;
         }
-        if !gamut_warning {
-            return;
-        }
-        if let Some(m) = &std_mat {
-            let q = mul(m, *p);
-            if q.iter().any(|&v| v < -1e-3) || (luma(*p) < 1.0 && q.iter().any(|&v| v > 1.0 + 1e-3)) {
-                *p = neon_violet;
-            }
-        } else if let Some(xf) = &custom_xform {
-            let mut q = [*p];
-            xf.transform_in_place(&mut q);
-            let q = q[0];
-            if q.iter().any(|&v| v < -tol) || (luma(*p) < 1.0 && q.iter().any(|&v| v > 1.0 + tol)) {
-                *p = neon_violet;
-            }
+        // over-white highlights are the clipping warning's business
+        let oog = gamut_warning
+            && match &std_mat {
+                Some(m) => {
+                    let t = mul(m, *p);
+                    t.iter().any(|&v| v < -1e-3) || (luma(*p) < 1.0 && t.iter().any(|&v| v > 1.0 + 1e-3))
+                }
+                None => (ink_black..1.0).contains(&luma(*p)) && checked.as_ref().is_some_and(|c| c[i] == alarm),
+            };
+        if oog {
+            *p = neon_violet;
+        } else if let Some(sim) = &simulated {
+            *p = sim[i];
         }
     });
 }
@@ -387,27 +400,54 @@ mod tests {
         assert!(r > 240 && g < 40 && b < 40, "{r} {g} {b}");
     }
 
+    /// ProPhoto and ACEScg exports carry a profile that decodes them back to the same colours.
     #[test]
-    fn prophoto_and_acescg_roundtrip_and_soft_proof() {
+    fn prophoto_and_acescg_exports_round_trip() {
         let orig: Vec<Px> = vec![[0.18, 0.18, 0.18], [0.8, 0.2, 0.1], [0.1, 0.7, 0.3]];
         for space in ["ProPhotoRGB", "ACEScg"] {
-            let mut px = orig.clone();
-            convert_working_space(&mut px, space).unwrap();
+            let (mut px, icc_bytes) = from_working(&orig, space, None).unwrap();
+            to_working(&icc_bytes, &mut px).unwrap();
             for (a, b) in orig.iter().zip(&px) {
                 for c in 0..3 {
                     assert!((a[c] - b[c]).abs() < 5e-3, "{space}: {a:?} vs {b:?}");
                 }
             }
-            let (encoded, icc_bytes) = from_working(&orig, space, None).unwrap();
-            assert_eq!(encoded.len(), orig.len());
-            assert!(icc_bytes.len() > 200);
         }
+    }
 
-        // Soft-proofing with FineArtMatte + BPC + gamut warning
-        let mut proof_px = vec![[0.2, 0.2, 0.2], [1.0, 0.0, 0.0]]; // pure Rec.2020 red is out-of-gamut for matte paper
-        soft_proof(&mut proof_px, Some("FineArtMatte"), "perceptual", true, true, true, false, None);
-        // The out-of-gamut pure Rec.2020 red must be flagged with neon violet (high blue & red, low green)
-        assert!(proof_px[1][2] > 0.5 && proof_px[1][1] < 0.2, "expected neon violet warning, got {:?}", proof_px[1]);
+    /// The simulated matte paper: what it can't print is flagged, its ink black lifts the shadows (BPC
+    /// compresses them, without it they merge), and the warning alone leaves in-gamut pixels untouched.
+    #[test]
+    fn soft_proofs_a_simulated_paper() {
+        let px: Vec<Px> = vec![[0.2, 0.2, 0.2], [1.0, 0.0, 0.0], [0.0005; 3], [0.004; 3]];
+        let neon = |p: Px| p[2] > 0.5 && p[1] < 0.2;
+        let mut p = px.clone();
+        soft_proof(&mut p, Some("FineArtMatte"), "perceptual", true, true, true, false, None);
+        assert!(neon(p[1]) && !neon(p[0]), "{p:?}");
+        assert!(luma(p[2]) > 0.015 && luma(p[3]) > luma(p[2]) + 1e-3, "matte black, BPC: {p:?}");
+        let mut p = px.clone();
+        soft_proof(&mut p, Some("FineArtMatte"), "relative", false, true, false, false, None);
+        assert!(luma(p[2]) > 0.015 && (luma(p[3]) - luma(p[2])).abs() < 1e-3, "matte black, no BPC: {p:?}");
+        let mut p = px.clone();
+        soft_proof(&mut p, Some("FineArtMatte"), "relative", true, false, true, false, None);
+        assert!(neon(p[1]) && p[0] == px[0] && p[2] == px[2], "{p:?}");
+    }
+
+    /// A LUT-based CMYK printer profile (macOS ships one): lcms2's gamut check flags what it can't print.
+    /// (Checking against the profile's output range never could: its tables clip to 0-1, and CMYK output
+    /// doesn't fit an RGB transform at all.)
+    #[test]
+    fn gamut_warning_works_for_a_cmyk_profile() {
+        let cmyk = "/System/Library/ColorSync/Profiles/Generic CMYK Profile.icc";
+        if !Path::new(cmyk).is_file() {
+            return;
+        }
+        let px: Vec<Px> = vec![[0.18; 3], [0.0, 1.0, 0.0], [0.5, 0.4, 0.3]];
+        let mut p = px.clone();
+        let t = std::time::Instant::now();
+        soft_proof(&mut p, Some(cmyk), "relative", true, false, true, false, None);
+        eprintln!("CMYK gamut check: {:?}", t.elapsed());
+        assert!(p[0] == px[0] && p[2] == px[2] && p[1][2] > 0.5 && p[1][1] < 0.2, "{p:?}");
     }
 
     #[test]

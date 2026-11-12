@@ -5,8 +5,8 @@ import { Btn, HUE, Icon } from "./controls";
 
 const hint = "text-[10px] text-neutral-500";
 
-type SettingModelKey = "ai_align_model" | "ai_denoise_model" | "ai_removal_model";
-type CategoryFilter = "all" | "geometry" | "denoise" | "retouch" | "people" | "installed";
+type SettingModelKey = "ai_align_model" | "ai_denoise_model" | "ai_removal_model" | "ai_select_model" | "ai_concept_model";
+type CategoryFilter = "all" | "geometry" | "denoise" | "retouch" | "masks" | "people" | "installed";
 
 /** Settings → AI models: hardware summary, category filter bar, and organized AI model groups
  *  matching the Develop → AI workflow order (Tone & Geometry, Detail & Denoise, Retouch & Fill, People & Faces). */
@@ -146,11 +146,15 @@ export function AiModelsSettings({ settings, setSettings }: { settings: Settings
   const removalModels = models.filter((m) => m.kind === "inpaint" || m.kind === "generate");
   const faceRecModels = models.filter((m) => m.kind === "faces");
   const faceSwapModels = models.filter((m) => m.kind === "faceswap");
+  const landmarkModels = models.filter((m) => m.kind === "landmarks");
+  const clickModels = models.filter((m) => m.kind === "segment");
+  const conceptModels = models.filter((m) => m.kind === "concept");
 
   const showGeometry = filter === "all" || filter === "geometry" || filter === "installed";
   const showDenoise = filter === "all" || filter === "denoise" || filter === "installed";
   const showRetouch = filter === "all" || filter === "retouch" || filter === "installed";
   const showPeople = filter === "all" || filter === "people" || filter === "installed";
+  const showMasks = filter === "all" || filter === "masks" || filter === "installed";
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
@@ -204,6 +208,7 @@ export function AiModelsSettings({ settings, setSettings }: { settings: Settings
                 ["geometry", "Tone & Geometry"],
                 ["denoise", "Detail & Denoise"],
                 ["retouch", "Retouch & Fill"],
+                ["masks", "Selection & Masks"],
                 ["people", "People & Faces"],
                 ["installed", `Installed (${installedModels.length + 1})`],
               ] as [CategoryFilter, string][]
@@ -392,6 +397,42 @@ export function AiModelsSettings({ settings, setSettings }: { settings: Settings
             <div>
               <h3 className="mb-1.5 font-semibold text-neutral-200">Face Swap (Develop → AI → Face Swap)</h3>
               {renderModelList(faceSwapModels)}
+            </div>
+
+            <div>
+              <h3 className="mb-1.5 font-semibold text-neutral-200">Closed Eyes (Auto → culling, Develop → Focus)</h3>
+              <p className={`${hint} mb-1.5`}>
+                Reads each scanned face&apos;s eyelids from 68 landmarks: a blink is a face whose eye aspect ratio falls under 0.2. Without it, nothing is judged about eyes.
+              </p>
+              {renderModelList(landmarkModels)}
+            </div>
+          </section>
+        )}
+
+        {/* GROUP 5: SELECTION & MASKING (SEGMENT ANYTHING) */}
+        {showMasks && (
+          <section className="rounded-lg border border-neutral-800 bg-neutral-900 p-4 space-y-4">
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-2.5">
+              <div className="flex items-center gap-2">
+                <span className={HUE.violet.text}>
+                  <Icon d="M4 4h6v6H4zM14 14h6v6h-6zM14 4l6 6M4 14l6 6" />
+                </span>
+                <div>
+                  <h2 className="text-xs font-semibold text-neutral-100">5. Selection &amp; Masking · Segment Anything</h2>
+                  <p className={hint}>Used by Develop → Masks (click and select by name) and Auto → Masks. Runs on this computer: nothing is uploaded.</p>
+                </div>
+              </div>
+              <span className="rounded bg-violet-500/15 px-2 py-0.5 text-[10px] font-medium text-violet-300">Local masks</span>
+            </div>
+            <div>
+              <h3 className="mb-1.5 font-semibold text-neutral-200">Click to select · SAM 2.1</h3>
+              <p className={`${hint} mb-1.5`}>Click an object: it is selected whole (Shift-click: just the part). After the first click on a photo, each one takes milliseconds.</p>
+              {renderModelList(clickModels, "ai_select_model")}
+            </div>
+            <div>
+              <h3 className="mb-1.5 font-semibold text-neutral-200">Select by name &amp; Auto masks · SAM 3</h3>
+              <p className={`${hint} mb-1.5`}>Type what to select (&ldquo;sky&rdquo;, &ldquo;person&rdquo;, &ldquo;red car&rdquo;): every instance is found. Auto masks use it for subject, sky, people and background.</p>
+              {renderModelList(conceptModels, "ai_concept_model")}
             </div>
           </section>
         )}

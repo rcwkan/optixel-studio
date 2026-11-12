@@ -19,16 +19,25 @@ public:
   // 0: LibRaw's own demosaic; else one of the codes above (Bayer sensors only: X-Trans, Foveon and
   // 4-colour sensors keep LibRaw's).
   int ol_demosaic = 0;
+  // 0..1: sensor denoise on the demosaiced camera RGB, before the colour matrix mixes the channels' noise
+  float ol_denoise = 0.f;
 
   void use_own_demosaic(int code) {
     ol_demosaic = code;
     callbacks.interpolate_bayer_cb = code ? &OlRaw::interpolate : nullptr;
   }
 
+  void use_denoise(float strength) {
+    ol_denoise = strength;
+    callbacks.pre_converttorgb_cb = strength > 1e-4f ? &OlRaw::denoise : nullptr;
+  }
+
   // Extract the 2x2 Bayer pattern (0 R, 1 G, 2 B) in image coordinates.
-  // Returns false when the sensor is not a standard 3-color Bayer mosaic.
+  // Returns false when the sensor is not a plain 3-colour 2x2 Bayer mosaic: LibRaw calls the hook for
+  // any `filters` > 1000, which also covers CMYG/RGBE sensors and layouts that change down the rows.
   bool bayer_2x2(int pat[2][2]) {
-    if (imgdata.idata.filters <= 1000 || imgdata.idata.colors > 4) return false;
+    unsigned f = imgdata.idata.filters;
+    if (f <= 1000 || imgdata.idata.colors != 3 || f != (f & 0xffu) * 0x01010101u) return false;
     int seen[3] = {0, 0, 0};
     for (int r = 0; r < 2; ++r) {
       for (int c = 0; c < 2; ++c) {
@@ -44,4 +53,5 @@ public:
 
 private:
   static void interpolate(void *self);
+  static void denoise(void *self);
 };

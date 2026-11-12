@@ -435,6 +435,55 @@ pub fn strip_ansi(s: &str) -> String {
     out
 }
 
+/// Ensure Antigravity CLI/IDE's user MCP configuration has the current Optixel MCP server registered.
+pub fn sync_antigravity_mcp(url: &str, token: &str) {
+    let Some(home) = dirs::home_dir() else { return };
+    let targets = [
+        home.join(".gemini").join("config").join("mcp_config.json"),
+        home.join(".gemini").join("antigravity").join("mcp_config.json"),
+    ];
+    for path in &targets {
+        let Some(parent) = path.parent() else { continue };
+        if !parent.is_dir() {
+            continue;
+        }
+        let mut root: Value = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| json!({ "mcpServers": {} }));
+
+        if !root.is_object() {
+            root = json!({ "mcpServers": {} });
+        }
+        if root.get("mcpServers").is_none() {
+            root["mcpServers"] = json!({});
+        }
+
+        if let Some(servers) = root.get_mut("mcpServers").and_then(Value::as_object_mut) {
+            servers.remove("openlight");
+            let entry = json!({
+                "disabled": false,
+                "headers": {
+                    "Authorization": format!("Bearer {token}")
+                },
+                "serverUrl": url
+            });
+            if servers.get("optixel") != Some(&entry) {
+                servers.insert("optixel".to_string(), entry);
+                if let Ok(json_str) = serde_json::to_string_pretty(&root) {
+                    if std::fs::write(path, json_str).is_ok() {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// `agent`: the agent prompt; None builds the editing prompt for `prompt`.
 fn run_cli(core: &Arc<Core>, p: &Provider, id: i64, prompt: &str, dir: &PathBuf, agent: Option<String>) -> Result<String, String> {
     let (enabled, url, token) = {
@@ -486,6 +535,9 @@ fn run_cli(core: &Arc<Core>, p: &Provider, id: i64, prompt: &str, dir: &PathBuf,
         .collect();
     let (prog, args) = argv.split_first().ok_or("empty command")?;
     let prog_path = find_binary(prog);
+    if prog.contains("antigravity") || p.id == "cli:antigravity" {
+        sync_antigravity_mcp(&url, &token);
+    }
     core.log(&p.id, format!("running {} in {}", prog_path.display(), snap.dir.display()));
     let mut child = Command::new(&prog_path)
         .args(args)

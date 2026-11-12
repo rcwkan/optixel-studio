@@ -174,6 +174,9 @@ export function AiTab(p: {
   const [faceQuery, setFaceQuery] = useState<string | null>(null);
   const [faces, setFaces] = useState<Photo[]>([]);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  /** which tool is showing: one at a time, so nothing needs scrolling to reach */
+  const [sub, setSub] = useState<"tone" | "align" | "denoise" | "retouch">("tone");
+  const [rsub, setRsub] = useState<"remove" | "face">("remove");
 
   useEffect(() => void api.aiModels().then((r) => setModels(r.models), () => setModels([])), []);
   useEffect(() => {
@@ -469,6 +472,32 @@ export function AiTab(p: {
         </button>
       </div>
 
+      {/* Tool sub-menu: a dot marks a tool that is applied to this photo, pulsing while it runs */}
+      <div className="border-b border-neutral-800 px-3 py-2">
+        <div className="grid grid-cols-4 overflow-hidden rounded bg-neutral-800 text-[11px]" role="tablist">
+          {(
+            [
+              ["tone", "Enhance", "Tone & color: AI auto adjust and creative looks", adjusting, false, "text-amber-500"],
+              ["align", "Align", "Geometry: level the horizon and straighten verticals", !!alignJob, hasAlignment, "text-cyan-500"],
+              ["denoise", "Denoise", "Detail: neural denoise", !!job, hasDenoised && denoiseEnabled, "text-emerald-500"],
+              ["retouch", "Retouch", "Object removal, generative fill, face swap and their layers", removing || !!swapJob, layerCount > 0, "text-violet-500"],
+            ] as const
+          ).map(([t, label, title, busy, on, hue]) => (
+            <button
+              key={t}
+              role="tab"
+              aria-selected={sub === t}
+              title={title}
+              onClick={() => setSub(t)}
+              className={`whitespace-nowrap px-1.5 py-1 ${sub === t ? "bg-neutral-600 text-white" : "text-neutral-400 hover:text-neutral-200"}`}
+            >
+              {label}
+              {t === "retouch" && layerCount > 0 && !busy ? ` (${layerCount})` : busy || on ? <span className={`ml-0.5 ${hue} ${busy ? "animate-pulse" : ""}`}>●</span> : null}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {msg && (
         <div
           className={`mx-3 mt-2 flex items-start justify-between gap-2 rounded border px-2.5 py-1.5 text-[10px] ${
@@ -490,6 +519,7 @@ export function AiTab(p: {
       )}
 
       {/* 1. TONE & COLOR — AI AUTO ADJUST */}
+      {sub === "tone" && (
       <Panel
         title={
           <span className="flex items-center gap-1.5">
@@ -534,8 +564,10 @@ export function AiTab(p: {
           {adjusting ? "Adjusting…" : "✦ AI Auto Adjust"}
         </Btn>
       </Panel>
+      )}
 
       {/* 2. GEOMETRY & PERSPECTIVE — PERSPECTIVEFIELDS AUTO ALIGN */}
+      {sub === "align" && (
       <Panel
         title={
           <span className="flex items-center gap-1.5">
@@ -697,8 +729,10 @@ export function AiTab(p: {
           </div>
         )}
       </Panel>
+      )}
 
       {/* 3. DETAIL & RESTORATION — AI DENOISE */}
+      {sub === "denoise" && (
       <Panel
         title={
           <span className="flex items-center gap-1.5">
@@ -799,8 +833,10 @@ export function AiTab(p: {
           </div>
         )}
       </Panel>
+      )}
 
       {/* 4. RETOUCH & FACES — OBJECT REMOVAL, FACE SWAP & AI LAYERS */}
+      {sub === "retouch" && (
       <Panel
         title={
           <span className="flex items-center gap-1.5">
@@ -818,7 +854,28 @@ export function AiTab(p: {
           ) : null
         }
       >
+        <div className="mb-2.5 grid grid-cols-2 overflow-hidden rounded bg-neutral-800 text-[11px]" role="tablist">
+          {(
+            [
+              ["remove", "Remove & Fill", removing],
+              ["face", "Face Swap", !!swapJob],
+            ] as const
+          ).map(([t, label, busy]) => (
+            <button
+              key={t}
+              role="tab"
+              aria-selected={rsub === t}
+              onClick={() => setRsub(t)}
+              className={`px-1.5 py-1 ${rsub === t ? "bg-neutral-600 text-white" : "text-neutral-400 hover:text-neutral-200"}`}
+            >
+              {label}
+              {busy && <span className="ml-0.5 animate-pulse text-violet-500">●</span>}
+            </button>
+          ))}
+        </div>
+
         {/* Sub-card: Object Removal & Generative Fill */}
+        {rsub === "remove" && (
         <div className="rounded-md border border-neutral-800/90 bg-neutral-900/40 p-2.5">
           <div className="flex items-center justify-between">
             <span className="font-semibold text-neutral-200">Object Removal &amp; Fill</span>
@@ -923,9 +980,11 @@ export function AiTab(p: {
             </p>
           )}
         </div>
+        )}
 
         {/* Sub-card: Face Swap */}
-        <div className="mt-2.5 rounded-md border border-neutral-800/90 bg-neutral-900/40 p-2.5">
+        {rsub === "face" && (
+        <div className="rounded-md border border-neutral-800/90 bg-neutral-900/40 p-2.5">
           <div className="flex items-center justify-between">
             <span className="font-semibold text-neutral-200">Face Swap</span>
             <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[9px] text-neutral-400">
@@ -1008,6 +1067,7 @@ export function AiTab(p: {
             </p>
           )}
         </div>
+        )}
 
         {/* Sub-card: AI Layers Stack */}
         {p.dev?.ai_removals && p.dev.ai_removals.length > 0 && (
@@ -1050,6 +1110,7 @@ export function AiTab(p: {
           </div>
         )}
       </Panel>
+      )}
     </div>
   );
 }

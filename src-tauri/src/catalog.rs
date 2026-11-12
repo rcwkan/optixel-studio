@@ -75,6 +75,10 @@ pub fn open(path: &Path) -> Result<Connection, String> {
     let c = Connection::open(path).map_err(es)?;
     c.execute_batch(SCHEMA).map_err(es)?;
     c.execute_batch(crate::faces::SCHEMA).map_err(es)?;
+    // the eyes' landmarks (normalised), for blink detection; faces scanned before have none
+    for col in ["lx", "ly", "rx", "ry"] {
+        let _ = c.execute(&format!("ALTER TABLE faces ADD COLUMN {col} REAL"), []);
+    }
     let _ = c.execute("ALTER TABLE photos ADD COLUMN deleted_at TEXT", []);
     let _ = c.execute("CREATE INDEX IF NOT EXISTS photos_deleted ON photos(deleted_at)", []);
     let ids: Vec<i64> = c
@@ -829,7 +833,8 @@ pub fn write_sidecar(p: &Photo, d: &Develop) {
     if let Err(e) = fs::write(sidecar_path(&p.path), sidecar_json(p, d)) {
         eprintln!("sidecar {}: {e}", p.path);
     }
-    if crate::xmp::candidate_xmp_paths(Path::new(&p.path)).iter().any(|x| x.is_file()) {
+    // keep an .xmp this app wrote in step; never touch Lightroom's (or anyone else's) on its own
+    if crate::xmp::candidate_xmp_paths(Path::new(&p.path)).iter().any(|x| fs::read_to_string(x).is_ok_and(|s| crate::xmp::is_ours(&s))) {
         let _ = crate::xmp::write_adobe_xmp(p, d, None, None);
     }
 }

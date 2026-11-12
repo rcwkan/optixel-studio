@@ -149,9 +149,10 @@ pub fn scan(core: &Core, ids: Option<&[i64]>, job: &Job) -> Result<Value, String
             centroids.add(person, &e);
             let (w, h) = (img.w as f32, img.h as f32);
             let [x0, y0, x1, y1] = [f.bbox[0].max(0.0), f.bbox[1].max(0.0), f.bbox[2].min(w), f.bbox[3].min(h)];
+            let [[lx, ly], [rx, ry], ..] = f.lm;
             tx.execute(
-                "INSERT INTO faces (photo_id, person_id, x, y, w, h, score, embedding) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                params![id, person, x0 / w, y0 / h, (x1 - x0) / w, (y1 - y0) / h, f.score, blob(&e)],
+                "INSERT INTO faces (photo_id, person_id, x, y, w, h, score, embedding, lx, ly, rx, ry) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![id, person, x0 / w, y0 / h, (x1 - x0) / w, (y1 - y0) / h, f.score, blob(&e), lx / w, ly / h, rx / w, ry / h],
             )
             .map_err(es)?;
             let face_id = tx.last_insert_rowid();
@@ -179,6 +180,74 @@ pub fn scan(core: &Core, ids: Option<&[i64]>, job: &Job) -> Result<Value, String
 }
 
 /// After an import: scan the new photos in the background when People is on and its model is installed.
+/// Eye aspect ratio below which an eye is shut (Soukupová & Čech: about 0.3 open, under 0.2 closed).
+pub const BLINK_EAR: f32 = 0.2;
+
+/// Where a face box's eyes sit (fractions of the box) when its scan kept no landmarks: YOLOFace's average.
+const EYES_IN_BOX: [[f32; 2]; 2] = [[0.30, 0.40], [0.73, 0.40]];
+
+/// The eyes (normalised to the upright photo) of every face found in `photo`.
+pub fn photo_eyes(c: &Connection, photo: i64) -> Vec<[[f32; 2]; 2]> {
+    let Ok(mut st) = c.prepare("SELECT x, y, w, h, lx, ly, rx, ry FROM faces WHERE photo_id = ?") else { return vec![] };
+    st.query_map([photo], |r| {
+        let b: [f32; 4] = [r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?];
+        let lm: [Option<f32>; 4] = [r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?];
+        Ok(match lm {
+            [Some(lx), Some(ly), Some(rx), Some(ry)] => [[lx, ly], [rx, ry]],
+            _ => EYES_IN_BOX.map(|[fx, fy]| [b[0] + fx * b[2], b[1] + fy * b[3]]),
+        })
+    })
+    .map(|rows| rows.flatten().collect())
+    .unwrap_or_default()
+}
+
+/// The face boxes (x, y, w, h, normalised to the upright photo) the face scan found in `photo`.
+pub fn photo_boxes(c: &Connection, photo: i64) -> Vec<[f32; 4]> {
+    let Ok(mut st) = c.prepare("SELECT x, y, w, h FROM faces WHERE photo_id = ?") else { return vec![] };
+    st.query_map([photo], |r| Ok([r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?])).map(|rows| rows.flatten().collect()).unwrap_or_default()
+}
+
+/// 2DFAN4, loaded once (it is asked about every face of every photo culled).
+static LANDMARKER: Mutex<Option<(PathBuf, ort::session::Session)>> = Mutex::new(None);
+
+/// Landmarks below this confidence are a profile, the back of a head, a blurred face: nothing to judge.
+const SURE: f32 = 0.5;
+
+/// The eye aspect ratio of each face in `img` (boxes normalised to it) from 2DFAN4's landmarks, for the faces
+/// it is sure of; None without the landmark model. Under `BLINK_EAR` the eyes are shut.
+pub fn eye_aspects(data: &std::path::Path, img: &crate::develop::Img, boxes: &[[f32; 4]]) -> Option<Vec<f32>> {
+    let path = crate::aimodel::model_file(data, "face-landmarks-2dfan4", crate::faceswap::LANDMARKS)?;
+    let mut g = LANDMARKER.lock().ok()?;
+    if g.as_ref().is_none_or(|(p, _)| *p != path) {
+        *g = Some((path.clone(), crate::aimodel::open_session(&path, None, 0, false).ok()?));
+    }
+    let s = &mut g.as_mut()?.1;
+    let (w, h) = (img.w as f32, img.h as f32);
+    Some(
+        boxes
+            .iter()
+            .filter_map(|b| {
+                let bb = [b[0] * w, b[1] * h, (b[0] + b[2]) * w, (b[1] + b[3]) * h];
+                let (pts, sure) = crate::faceswap::landmarks68(s, img, bb, false).ok()?;
+                (sure >= SURE).then(|| crate::faceswap::eye_aspect(&pts))
+            })
+            .collect(),
+    )
+}
+
+/// A face's two eye patches (x, y, w, h each, normalised) for `libraw::focus_peaking_and_blink`, around its
+/// eyes in a `w` × `h` picture: about half the distance between the eyes wide and a third of it tall.
+pub fn eye_patches(eyes: [[f32; 2]; 2], w: usize, h: usize) -> [f32; 8] {
+    let (fw, fh) = (w as f32, h as f32);
+    let d = ((eyes[1][0] - eyes[0][0]) * fw).hypot((eyes[1][1] - eyes[0][1]) * fh);
+    let (pw, ph) = (0.55 * d / fw, 0.35 * d / fh);
+    let mut out = [0.0; 8];
+    for (k, e) in eyes.iter().enumerate() {
+        out[k * 4..k * 4 + 4].copy_from_slice(&[e[0] - pw / 2.0, e[1] - ph / 2.0, pw, ph]);
+    }
+    out
+}
+
 pub fn after_import(core: &Arc<Core>, ids: &[i64]) {
     if ids.is_empty() || !core.settings.lock().unwrap().faces_enabled || crate::aimodel::faces_dir(&core.dir()).is_err() {
         return;
@@ -492,6 +561,33 @@ pub fn filter_sql(people: &[i64]) -> String {
 }
 
 #[cfg(test)]
+mod landmark_tests {
+    /// Set OPTIXEL_TEST_MODELS to a data folder with YOLOFace and 2DFAN4 installed, and OPTIXEL_TEST_OPEN_EYES
+    /// (and optionally OPTIXEL_TEST_SHUT_EYES) to photos: open eyes read above BLINK_EAR, shut ones below.
+    #[test]
+    fn reads_eye_openness() {
+        let Some(data) = std::env::var_os("OPTIXEL_TEST_MODELS") else { return };
+        let data = std::path::Path::new(&data);
+        let det = crate::aimodel::model_file(data, "arcface-faces", crate::faceswap::DETECT).expect("YOLOFace installed");
+        let mut det = crate::aimodel::open_session(&det, None, 0, false).unwrap();
+        let mut ears = |var: &str| -> Option<Vec<f32>> {
+            let img = crate::develop::load(std::path::Path::new(&std::env::var_os(var)?), Some(1600)).unwrap();
+            let (w, h) = (img.w as f32, img.h as f32);
+            let boxes: Vec<[f32; 4]> = crate::faceswap::detect(&mut det, &img).unwrap().iter().map(|f| [f.bbox[0] / w, f.bbox[1] / h, (f.bbox[2] - f.bbox[0]) / w, (f.bbox[3] - f.bbox[1]) / h]).collect();
+            super::eye_aspects(data, &img, &boxes)
+        };
+        if let Some(open) = ears("OPTIXEL_TEST_OPEN_EYES") {
+            eprintln!("open: {open:?}");
+            assert!(!open.is_empty() && open.iter().all(|&e| e > super::BLINK_EAR && e < 0.5), "{open:?}");
+        }
+        if let Some(shut) = ears("OPTIXEL_TEST_SHUT_EYES") {
+            eprintln!("shut photo: {shut:?}");
+            assert!(shut.iter().any(|&e| e < super::BLINK_EAR), "{shut:?}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -575,3 +671,4 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
     }
 }
+

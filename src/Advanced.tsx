@@ -120,6 +120,48 @@ export function CalibrationPanel(p: WholeProps) {
   );
 }
 
+/** a creative .cube 3D LUT look, last in the pipeline (on the GPU, with the develop stack, when it can be) */
+export function LookPanel(p: WholeProps) {
+  const { dev, change, S } = p;
+  const [luts, setLuts] = useState<string[]>([]);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    api.lutList().then(setLuts).catch(() => {});
+  }, []);
+  const pick = (lut: string) => change({ ...dev, look: { ...dev.look, lut } }, lut ? `Look: ${lut}` : "Remove look");
+  const importLut = async () => {
+    setErr("");
+    const f = await open({ multiple: false, title: "Load a 3D LUT look", filters: [{ name: "3D LUT", extensions: ["cube", "CUBE"] }] });
+    if (typeof f !== "string") return;
+    try {
+      const name = await api.lutImport(f);
+      setLuts(await api.lutList());
+      pick(name);
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+  return (
+    <Panel title="Look (3D LUT)" open={!!dev.look.lut} right={resetBtn(p, "look", "look")}>
+      <div className="flex gap-1">
+        <select className="min-w-0 flex-1 rounded bg-neutral-800 px-1 py-0.5 text-[11px]" value={dev.look.lut} onChange={(e) => pick(e.target.value)}>
+          <option value="">None</option>
+          {luts.map((l) => (
+            <option key={l} value={l}>
+              {l.replace(/\.cube$/i, "")}
+            </option>
+          ))}
+        </select>
+        <Btn onClick={importLut} title="Import a .cube 3D LUT made for sRGB / Rec.709 display values">
+          Import…
+        </Btn>
+      </div>
+      {dev.look.lut && S("Amount", ["look", "amount"], 0, 100)}
+      {err && <p className="text-[10px] text-rose-400">{err}</p>}
+    </Panel>
+  );
+}
+
 export function GrainPanel(p: WholeProps) {
   const { S } = p;
   return (

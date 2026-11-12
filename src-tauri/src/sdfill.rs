@@ -19,7 +19,7 @@ const CTX: usize = 77;
 // CLIP tokenizer
 // ---------------------------------------------------------------------------
 
-struct Tokenizer {
+pub(crate) struct Tokenizer {
     vocab: HashMap<String, i32>,
     ranks: HashMap<(String, String), usize>,
     bytes: Vec<char>,
@@ -28,8 +28,13 @@ struct Tokenizer {
 
 impl Tokenizer {
     fn load(dir: &Path) -> Result<Self, String> {
-        let vocab: HashMap<String, i32> = serde_json::from_str(&fs::read_to_string(dir.join("tokenizer/vocab.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        let merges = fs::read_to_string(dir.join("tokenizer/merges.txt")).map_err(|e| e.to_string())?;
+        Self::load_files(&dir.join("tokenizer/vocab.json"), &dir.join("tokenizer/merges.txt"))
+    }
+
+    /// CLIP's BPE from its `vocab.json` and `merges.txt`.
+    pub(crate) fn load_files(vocab: &Path, merges: &Path) -> Result<Self, String> {
+        let vocab: HashMap<String, i32> = serde_json::from_str(&fs::read_to_string(vocab).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let merges = fs::read_to_string(merges).map_err(|e| e.to_string())?;
         let ranks = merges
             .lines()
             .skip(1)
@@ -83,16 +88,22 @@ impl Tokenizer {
 
     /// 77 token ids: start, the text (cut to fit), end, then padding with the end token.
     fn encode(&self, text: &str) -> Vec<i32> {
-        let (start, end) = (self.vocab["<|startoftext|>"], self.vocab["<|endoftext|>"]);
+        let end = self.vocab["<|endoftext|>"];
+        self.ids(text, CTX, end as i64).into_iter().map(|v| v as i32).collect()
+    }
+
+    /// `len` token ids: start, the text (cut to fit), end, then `pad`.
+    pub(crate) fn ids(&self, text: &str, len: usize, pad: i64) -> Vec<i64> {
+        let (start, end) = (self.vocab["<|startoftext|>"] as i64, self.vocab["<|endoftext|>"] as i64);
         let clean = text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
         let mut ids = vec![start];
         for m in self.re.find_iter(&clean) {
             let t: String = m.as_str().bytes().map(|b| self.bytes[b as usize]).collect();
-            ids.extend(self.bpe(&t).iter().filter_map(|p| self.vocab.get(p)));
+            ids.extend(self.bpe(&t).iter().filter_map(|p| self.vocab.get(p)).map(|&v| v as i64));
         }
-        ids.truncate(CTX - 1);
+        ids.truncate(len.max(2) - 1);
         ids.push(end);
-        ids.resize(CTX, end);
+        ids.resize(len.max(2), pad);
         ids
     }
 }

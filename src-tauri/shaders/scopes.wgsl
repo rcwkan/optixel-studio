@@ -10,6 +10,7 @@ struct ScopeUniforms {
 
 @group(0) @binding(0) var<storage, read> src_buf: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> parade_bins: array<atomic<u32>>;
+// waveform: per bin red, green and blue sums (16 per full channel, plus 1) and the pixel count
 @group(0) @binding(2) var<storage, read_write> waveform_bins: array<atomic<u32>>;
 @group(0) @binding(3) var<uniform> u: ScopeUniforms;
 
@@ -42,9 +43,10 @@ fn accumulate(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let luma = clamp(0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z, 0.0, 1.0);
     let wy = min(u32((1.0 - luma) * f32(sh - 1u) + 0.5), sh - 1u);
-    let w_idx = (wy * sw + wf_x) * 3u;
+    let w_idx = (wy * sw + wf_x) * 4u;
     atomicAdd(&waveform_bins[w_idx + 0u], u32(rgb.x * 16.0 + 1.0));
     atomicAdd(&waveform_bins[w_idx + 1u], u32(rgb.y * 16.0 + 1.0));
     atomicAdd(&waveform_bins[w_idx + 2u], u32(rgb.z * 16.0 + 1.0));
+    atomicAdd(&waveform_bins[w_idx + 3u], 1u);
 }
 

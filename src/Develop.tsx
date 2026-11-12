@@ -1,9 +1,9 @@
 import { listen } from "@tauri-apps/api/event";
 import { Fragment, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CalibrationPanel, GrainPanel, LensPanel, ProofPanel, RawEnginePanel, SpotPanel, TransformPanel } from "./Advanced";
+import { CalibrationPanel, GrainPanel, LookPanel, LensPanel, ProofPanel, RawEnginePanel, SpotPanel, TransformPanel } from "./Advanced";
 import { Log } from "./Agent";
 import { AiTab } from "./AiDenoise";
-import { AiSelectPanel, AutoTab, PROFILES } from "./Auto";
+import { AutoTab, PROFILES } from "./Auto";
 import { ChannelMixerPanel, FiltersPanel, GradientMapPanel, HdrTab, HueSatPanel, LevelsPanel, SelectiveColorPanel } from "./Pro";
 import { api, FocusPeakingResult, RawInfo, ScopesData, Snap, Stroke, Develop as Dev, getPath, HistoryEntry, Mask, MaskComponent, Photo, Proof, Rendered, setPath, Settings, srgbToOklch, thumbUrl } from "./api";
 import { Btn, ColorWheel, CurveEditor, Histogram, Panel, Seg, Slider } from "./controls";
@@ -200,6 +200,22 @@ export function Develop(p: Props) {
   const [rtab, setRtab] = useState<RTab>("adjust");
   /** AI Select / spot heal: where the click being worked on was (normalised) */
   const [picking, setPicking] = useState<{ x: number; y: number } | null>(null);
+  // Segment Anything models installed on this computer (click: SAM 2.1, by name: SAM 3), and which engine clicks use
+  const [sam, setSam] = useState<{ click: boolean; name: boolean }>({ click: false, name: false });
+  const [selEngine, setSelEngine] = useState<"sam" | "provider">(() => {
+    try {
+      return localStorage.getItem("optixel.selEngine") === "provider" ? "provider" : "sam";
+    } catch {
+      return "sam";
+    }
+  });
+  const [naming, setNaming] = useState(false);
+  useEffect(() => {
+    api.aiModels().then(
+      (r) => setSam({ click: r.models.some((m) => m.kind === "segment" && m.installed), name: r.models.some((m) => m.kind === "concept" && m.installed) }),
+      () => {},
+    );
+  }, [tool]);
   const [proof, setProof] = useState<Proof>({ gamut: null, clipping: false, spots: null, intent: "perceptual", bpc: true, simulate_paper: false, gamut_warn: true });
   /** Real-time scope mode: Histogram | RGB Parade | Luma/Chroma Waveform */
   const [scopeMode, setScopeMode] = useState<"hist" | "parade" | "waveform">("hist");
@@ -995,18 +1011,36 @@ export function Develop(p: Props) {
     [flush, p.settings, p.onAddWorking, p.setAiTasks, p.onPhotoUpdated],
   );
   // AI Select: each clicked object becomes its own selection (⌥-click subtracts from the active one)
-  const aiSelect = async (x: number, y: number, subtract: boolean) => {
+  const useSam = sam.click && selEngine === "sam";
+  const aiSelect = async (x: number, y: number, subtract: boolean, part = false) => {
     if (id == null || !p.settings || picking) return;
     await flush();
     setPicking({ x, y });
     setError(null);
     try {
-      const r = await api.aiSelect(id, x, y, p.settings.active_provider, subtract ? maskSel : null, subtract);
+      const r = useSam
+        ? await api.samSelect(id, x, y, subtract ? maskSel : null, subtract, part)
+        : await api.aiSelect(id, x, y, p.settings.active_provider, subtract ? maskSel : null, subtract);
       if (idRef.current === id) (setDev(r.develop), setMaskSel(r.mask), setCompSel(0), setOverlay(true), refreshHistory(id));
     } catch (e) {
-      setError(`AI Select: ${e}`);
+      setError(`${useSam ? "SAM select" : "AI Select"}: ${e}`);
     } finally {
       setPicking(null);
+    }
+  };
+  // SAM 3: every instance of what the user names, as one new selection
+  const selectByName = async (what: string) => {
+    if (id == null || naming || !what.trim()) return;
+    await flush();
+    setNaming(true);
+    setError(null);
+    try {
+      const r = await api.samSelectConcept(id, what, null, false);
+      if (idRef.current === id) (setDev(r.develop), setMaskSel(r.mask), setCompSel(0), setOverlay(true), refreshHistory(id));
+    } catch (e) {
+      setError(`Select by name: ${e}`);
+    } finally {
+      setNaming(false);
     }
   };
 
@@ -1238,6 +1272,7 @@ export function Develop(p: Props) {
     else if (e.key.toLowerCase() === "r") setTool((t) => (t === "crop" ? "none" : "crop"));
     else if (e.key.toLowerCase() === "s") setTool((t) => (t === "select" ? "none" : "select"));
     else if (e.key.toLowerCase() === "o" && maskSel != null) setOverlay((o) => !o);
+    else if (e.key.toLowerCase() === "i" && maskSel != null && dev?.masks[maskSel]) change(setPath(dev, ["masks", maskSel, "invert"], !dev.masks[maskSel].invert), "Invert selection");
     else if (e.key.toLowerCase() === "q") (setRtab("detail"), setMaskSel(null), setTool((t) => (t === "spot" ? "none" : "spot")));
     else if (e.key.toLowerCase() === "j") setProof((v) => ({ ...v, clipping: !v.clipping }));
     else if (e.key === "Escape") (setTool("none"), setMaskSel(null), clearBrush());
@@ -1327,7 +1362,7 @@ export function Develop(p: Props) {
       const r = canvas.current!.getBoundingClientRect();
       const [x, y] = [clamp((e.clientX - r.left) / r.width, 0, 1), clamp((e.clientY - r.top) / r.height, 0, 1)];
       if (tool === "spot") healSpot(x, y);
-      else aiSelect(x, y, e.altKey);
+      else aiSelect(x, y, e.altKey, e.shiftKey);
     } else if (tool === "swatch") {
       const [h, C, L] = srgbToOklch(...(sample(e) as [number, number, number]));
       const sw = { id: `swatch_${Date.now().toString(36)}`, src_hsl: [Math.round(h * 10) / 10, Math.round(C * 2500) / 10, Math.round(L * 1000) / 10], shift_hsl: [0, 0, 0], range_hsl: [50, 50, 50], falloff: 50 };
@@ -1523,20 +1558,6 @@ export function Develop(p: Props) {
       }
     }
   };
-  // Auto › remove: the engine heals the selection's objects away and commits the step
-  const removeSelection = async (i: number) => {
-    if (id == null) return;
-    await flush();
-    setError(null);
-    await waitFor("Removing", async () => {
-      try {
-        const d = await api.removeSelection(id, i);
-        if (idRef.current === id) (setDev(d), setMaskSel(null), refreshHistory(id));
-      } catch (e) {
-        setError(`Remove: ${e}`);
-      }
-    });
-  };
 
   const swatch = T && swatchSel != null ? T.point_color[swatchSel] : null;
 
@@ -1630,12 +1651,16 @@ export function Develop(p: Props) {
             className="pointer-events-none absolute inset-0 h-full w-full object-contain mix-blend-screen"
           />
           <div className="pointer-events-none absolute bottom-3 left-3 z-20 flex items-center gap-2 rounded bg-neutral-950/85 px-2.5 py-1 font-mono text-[10px] text-emerald-300 border border-emerald-700/60 shadow-lg backdrop-blur-md">
-            <span>◉ Focus: {focusPeaking.focus_score}%</span>
-            <span>·</span>
-            <span>Eye EAR: {focusPeaking.eye_openness}</span>
-            <span className={focusPeaking.blink_detected ? "text-rose-400 font-bold" : "text-emerald-400"}>
-              {focusPeaking.blink_detected ? "⚠ Blink Detected" : "✓ Eyes Open"}
-            </span>
+            <span>◉ {focusPeaking.faces > 0 ? "Eye focus" : "Focus"}: {focusPeaking.focus_score}%</span>
+            {focusPeaking.eye_openness != null && (
+              <>
+                <span>·</span>
+                <span>Eye EAR: {focusPeaking.eye_openness}</span>
+                <span className={focusPeaking.blink_detected ? "text-rose-400 font-bold" : "text-emerald-400"}>
+                  {focusPeaking.blink_detected ? "⚠ Blink Detected" : "✓ Eyes Open"}
+                </span>
+              </>
+            )}
           </div>
         </>
       )}
@@ -2737,6 +2762,7 @@ export function Develop(p: Props) {
                 <GrainPanel {...W} />
               </Panel>
             )}
+            {!mask && <LookPanel {...W} />}
 
             <FiltersPanel {...tp} />
 
@@ -2794,30 +2820,31 @@ export function Develop(p: Props) {
 
         {/* Masks: AI selections and masks, each tuned on its own in the other tabs */}
         {dev && rtab === "masks" && (
-          <>
-            <AiSelectPanel
-              dev={dev}
-              remove={removeSelection}
-              ask={(text) => id != null && void runPhotoAi(id, text)}
-              aiBusy={id != null ? !!p.aiTasks[id]?.busy : false}
-              aiPrompt={id != null ? p.aiTasks[id]?.prompt : undefined}
-            />
-            <SelectionsTab
-              dev={dev}
-              change={change}
-              sel={maskSel}
-              setSel={(i) => (setMaskSel(i), setCompSel(0))}
-              compSel={compSel}
-              setCompSel={setCompSel}
-              overlay={overlay}
-              setOverlay={setOverlay}
-              pickColor={(ci) => (setCompSel(ci), setTool("maskcolor"))}
-              S={slider(dev, change)}
-              selecting={tool === "select"}
-              toggleSelecting={() => setTool(tool === "select" ? "none" : "select")}
-              onTune={() => switchTab("adjust")}
-            />
-          </>
+          <SelectionsTab
+            dev={dev}
+            change={change}
+            sel={maskSel}
+            setSel={(i) => (setMaskSel(i), setCompSel(0))}
+            compSel={compSel}
+            setCompSel={setCompSel}
+            overlay={overlay}
+            setOverlay={setOverlay}
+            pickColor={(ci) => (setCompSel(ci), setTool("maskcolor"))}
+            S={slider(dev, change)}
+            selecting={tool === "select"}
+            toggleSelecting={() => setTool(tool === "select" ? "none" : "select")}
+            onTune={() => switchTab("adjust")}
+            sam={sam}
+            engine={selEngine}
+            setEngine={(e) => {
+              setSelEngine(e);
+              try {
+                localStorage.setItem("optixel.selEngine", e);
+              } catch {}
+            }}
+            selectByName={selectByName}
+            naming={naming}
+          />
         )}
 
         {/* Auto: one-click measured and AI adjustments */}
@@ -2967,6 +2994,11 @@ function SelectionsTab({
   selecting,
   toggleSelecting,
   onTune,
+  sam,
+  engine,
+  setEngine,
+  selectByName,
+  naming,
 }: {
   dev: Dev;
   change: (d: Dev, label: string, replacePrefix?: string) => void;
@@ -2981,8 +3013,15 @@ function SelectionsTab({
   selecting: boolean;
   toggleSelecting: () => void;
   onTune: () => void;
+  sam: { click: boolean; name: boolean };
+  engine: "sam" | "provider";
+  setEngine: (e: "sam" | "provider") => void;
+  selectByName: (what: string) => void;
+  naming: boolean;
 }) {
   const [newType, setNewType] = useState("linear_gradient");
+  const [what, setWhat] = useState("");
+  const local = sam.click && engine === "sam";
   const [newOp, setNewOp] = useState("subtract");
   const add = (type: string) => {
     const m: Mask = {
@@ -3004,9 +3043,50 @@ function SelectionsTab({
   const field = "rounded bg-neutral-800 px-1 py-0.5 text-[11px]";
   return (
     <div className="space-y-2 p-3 text-[11px]">
-      <Btn active={selecting} onClick={toggleSelecting} className="w-full" title="Click objects on the photo to select them with the AI (S)">
-        {selecting ? "✦ Click objects on the photo… (S to stop)" : "✦ Select objects with AI"}
+      {sam.click && (
+        <Seg
+          options={[
+            ["sam", "◎ SAM 2.1 · local"],
+            ["provider", "✦ AI provider"],
+          ]}
+          value={engine}
+          onChange={setEngine}
+        />
+      )}
+      <Btn
+        active={selecting}
+        onClick={toggleSelecting}
+        className="w-full"
+        title={local ? "Click objects on the photo to select them with Segment Anything, on this computer (S)" : "Click objects on the photo to select them with the AI (S)"}
+      >
+        {selecting ? `${local ? "◎" : "✦"} Click objects on the photo… (S to stop)` : local ? "◎ Select objects (SAM 2.1)" : "✦ Select objects with AI"}
       </Btn>
+      {selecting && (
+        <p className="text-[10px] text-neutral-500">
+          Click: the whole object{local ? " · Shift-click: just the part clicked" : ""} · Alt-click: take it out of the selected one · ⇄ or I: invert
+        </p>
+      )}
+      {sam.name && (
+        <form
+          className="flex gap-1"
+          onSubmit={(e) => {
+            e.preventDefault();
+            selectByName(what);
+          }}
+        >
+          <input
+            className="min-w-0 flex-1 rounded bg-neutral-800 px-1.5 py-0.5 text-[11px] outline-none focus:ring-1 focus:ring-violet-500"
+            placeholder="Select by name: sky, person, red car…"
+            value={what}
+            onChange={(e) => setWhat(e.target.value)}
+            onKeyDown={(e) => e.stopPropagation()}
+            title="Segment Anything 3 finds every instance of what you name, on this computer"
+          />
+          <Btn onClick={() => selectByName(what)} active={naming} disabled={naming || !what.trim()} title="Select every instance (SAM 3)">
+            {naming ? "Finding…" : "Select"}
+          </Btn>
+        </form>
+      )}
       <p className="text-[10px] text-neutral-500">
         {dev.masks.length
           ? "Each AI-selected object is listed below. Select either one to finetune only it in Adjust (or Unselect when done) — no new AI run; the checkbox turns its effect on/off, and × deletes it."
@@ -3029,6 +3109,11 @@ function SelectionsTab({
                 className={`min-w-0 flex-1 truncate text-left ${mk.enabled ? "hover:text-white" : "text-neutral-500"}`}
                 title={sel === i ? "Back to the whole photo (Esc)" : `Select ${mk.name} to finetune it`}
               >
+                {mk.invert && (
+                  <span className="mr-1 text-amber-300" title="Inverted: everything except this">
+                    ¬
+                  </span>
+                )}
                 {mk.name}
                 {tuned && (
                   <span className="ml-1 text-violet-300" title="Has its own tuning">
@@ -3036,6 +3121,13 @@ function SelectionsTab({
                   </span>
                 )}
               </button>
+              <Btn
+                active={!!mk.invert}
+                onClick={() => change(setPath(dev, ["masks", i, "invert"], !mk.invert), mk.invert ? "Uninvert selection" : "Invert selection")}
+                title={mk.invert ? `Selecting everything except ${mk.name}: click to select ${mk.name} again (I)` : `Invert: select everything except ${mk.name} (I)`}
+              >
+                ⇄
+              </Btn>
               <Btn active={sel === i} onClick={() => setSel(sel === i ? null : i)} title={sel === i ? "Back to the whole photo (Esc)" : "Tune only this object"}>
                 {sel === i ? "Unselect" : "Select"}
               </Btn>

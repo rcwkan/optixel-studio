@@ -48,6 +48,9 @@ ort = { version = "=2.0.0-rc.15", features = ["half"] }
 half = "2.7.1"
 regex = "1.13.1"
 zip = { version = "9.2.2", default-features = false, features = ["deflate"] }
+# lossless JPEG rotate/flip/crop: libjpeg-turbo built from its bundled source (cmake), linked statically,
+# never a system copy. Its x86 SIMD needs NASM on the build machine (ARM uses NEON, nothing to install).
+turbojpeg = { version = "1.5", default-features = false, features = ["cmake"] }
 
 [target.'cfg(windows)'.dependencies]
 ort = { version = "=2.0.0-rc.15", features = ["directml", "half"] }
