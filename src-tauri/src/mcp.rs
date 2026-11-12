@@ -109,11 +109,21 @@ pub fn tools() -> Value {
                 "parameters": parameters } }
         },
         {
+            "name": "mask_select_by_name",
+            "description": "Select every instance of something named in plain words (\"sky\", \"person\", \"red car\", \"dog\") with Segment Anything 3, on this computer (nothing is uploaded), as a new mask with optional local adjustments. The edges come from the model, not a traced polygon. invert_selection selects everything else (e.g. \"person\" inverted: all but the people). Needs a SAM 3 model installed in the AI tab; otherwise trace a polygon with mask_create_and_edit.",
+            "inputSchema": { "type": "object", "required": ["photo_id", "what"], "properties": {
+                "photo_id": { "type": "string" },
+                "what": { "type": "string", "description": "a short noun phrase: what to select" },
+                "invert_selection": { "type": "boolean", "default": false },
+                "local_adjustments": { "type": "object", "description": "exposure (-5..5), contrast, highlights, shadows, whites, blacks, temperature_shift, tint_shift, saturation (-100..100)" } } }
+        },
+        {
             "name": "mask_create_and_edit",
-            "description": "Create (or replace, by mask_name) a boolean mask and its local adjustments. Supported source_type values in this build: polygon (points: outline of an object or area, e.g. to select the castle, a person or the sky; the edge snaps to the photo), linear_gradient (start/end: [x,y] 0-1, full effect at start), radial_gradient (center [x,y], radius [rx,ry] as fractions of width/height), luminance_range (range [low,high] 0-1), color_range (color: sRGB [r,g,b] 0-1, tolerance 0-100). Coordinates refer to the full uncropped frame (photo_inspect full_frame). AI semantic types (ai_subject, ai_sky…) need segmentation models that are not installed: trace a polygon instead. A selection with all-zero local_adjustments changes nothing until adjusted.",
+            "description": "Create (or replace, by mask_name) a boolean mask and its local adjustments. Supported source_type values in this build: polygon (points: outline of an object or area, e.g. to select the castle, a person or the sky; the edge snaps to the photo), linear_gradient (start/end: [x,y] 0-1, full effect at start), radial_gradient (center [x,y], radius [rx,ry] as fractions of width/height), luminance_range (range [low,high] 0-1), color_range (color: sRGB [r,g,b] 0-1, tolerance 0-100). Coordinates refer to the full uncropped frame (photo_inspect full_frame). To select what you can name (sky, people, a car) prefer mask_select_by_name (Segment Anything 3, when installed). A selection with all-zero local_adjustments changes nothing until adjusted.",
             "inputSchema": { "type": "object", "required": ["photo_id", "mask_name", "operations", "local_adjustments"], "properties": {
                 "photo_id": { "type": "string" },
                 "mask_name": { "type": "string" },
+                "invert_selection": { "type": "boolean", "default": false, "description": "select everything except what the operations select (e.g. all but the person)" },
                 "operations": { "type": "array", "items": { "type": "object", "required": ["boolean_op", "source_type"], "properties": {
                     "boolean_op": { "type": "string", "enum": ["add", "subtract", "intersect"] },
                     "source_type": { "type": "string", "enum": develop::MASK_TYPES },
@@ -352,10 +362,18 @@ fn call_tool(core: &Arc<Core>, name: &str, a: &Value) -> Value {
             }
             Ok(vec![text(json!({ "applied": out, "ignored_keys": ignored }))])
         }
+        "mask_select_by_name" => {
+            let id = parse_id(&a["photo_id"])?;
+            let what = a["what"].as_str().filter(|s| !s.trim().is_empty()).ok_or("what is required")?;
+            let adjust = a.get("local_adjustments").map(|v| serde_json::from_value(v.clone()).map_err(|e| format!("local_adjustments: {e}"))).transpose()?;
+            let (d, i, found) = crate::segment::select_by_name(core, id, what, None, false, a["invert_selection"].as_bool().unwrap_or(false), adjust)?;
+            Ok(vec![text(json!({ "photo_id": id.to_string(), "mask_id": d.masks[i].mask_id, "mask_name": d.masks[i].name, "instances": found }))])
+        }
         "mask_create_and_edit" => {
             let id = parse_id(&a["photo_id"])?;
             let name = a["mask_name"].as_str().filter(|s| !s.is_empty()).ok_or("mask_name is required")?;
             let (mut mask, ignored) = develop::mask_from_ops(name, &a["operations"], a.get("local_adjustments").unwrap_or(&json!({})))?;
+            mask.invert = a["invert_selection"].as_bool().unwrap_or(false);
             let mut d = core.develop(id)?;
             match d.masks.iter_mut().find(|m| m.name == name) {
                 Some(m) => {

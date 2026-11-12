@@ -64,27 +64,18 @@ struct NativeMakerNotesOut {
 unsafe extern "C" {
     fn ol_raw_develop(data: *const u8, len: usize, o: *const Opts, out: *mut Out) -> c_int;
     fn ol_raw_free(handle: *mut c_void);
+    fn ol_raw_camera_matrix(data: *const u8, len: usize, out: *mut f32) -> c_int;
     fn ol_parse_makernotes(data: *const u8, len: usize, out: *mut NativeMakerNotesOut) -> c_int;
-    fn ol_compute_scopes_parade_waveform(
-        rgba: *const u8,
-        w: usize,
-        h: usize,
-        scope_w: usize,
-        scope_h: usize,
-        out_parade_rgba: *mut u8,
-        out_waveform_rgba: *mut u8,
-    );
-    fn ol_compute_focus_peaking_and_blink(
+    fn ol_scope_bins(rgba: *const u8, w: usize, h: usize, scope_w: usize, scope_h: usize, parade: *mut u32, waveform: *mut u32);
+    fn ol_compute_focus_peaking(
         rgb: *const f32,
         w: usize,
         h: usize,
         threshold: f32,
-        face_boxes_xywh: *const f32,
+        eyes_xywh: *const f32,
         num_faces: usize,
         out_peaking_mask: *mut u8,
         out_focus_score: *mut f32,
-        out_eye_openness: *mut f32,
-        out_blink_detected: *mut c_int,
     );
     fn ol_guided_feather_mask_16bit(
         guide_luma: *const f32,
@@ -96,23 +87,11 @@ unsafe extern "C" {
         out_alpha16: *mut u16,
         out_alpha_f32: *mut f32,
     );
-    fn ol_jpeg_lossless_transform(
-        jpeg_in: *const u8,
-        len_in: usize,
-        op: c_int,
-        crop_x: c_int,
-        crop_y: c_int,
-        crop_w: c_int,
-        crop_h: c_int,
-        out_jpeg: *mut *mut u8,
-        out_len: *mut usize,
-        err_buf: *mut c_char,
-    ) -> c_int;
     fn ol_decode_heif_container(
         data: *const u8,
         len: usize,
         max_edge: c_int,
-        out_rgb: *mut *mut u8,
+        out_rgb: *mut *mut u16,
         out_w: *mut u32,
         out_h: *mut u32,
         out_icc: *mut *mut u8,
@@ -247,6 +226,33 @@ pub fn inspect(file: &[u8]) -> Result<RawInfo, String> {
     })
 }
 
+type M3 = crate::develop::M3;
+
+fn matmul(a: &M3, b: &M3) -> M3 {
+    std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum()))
+}
+
+fn inverse(m: &M3) -> Option<M3> {
+    let c = |i: usize, j: usize| m[(i + 1) % 3][(j + 1) % 3] * m[(i + 2) % 3][(j + 2) % 3] - m[(i + 1) % 3][(j + 2) % 3] * m[(i + 2) % 3][(j + 1) % 3];
+    let det: f32 = (0..3).map(|j| m[0][j] * c(0, j)).sum();
+    // the transposed cofactors over the determinant
+    (det.abs() > 1e-8).then(|| std::array::from_fn(|i| std::array::from_fn(|j| c(j, i) / det)))
+}
+
+/// The working space (linear Rec.2020) and a RAW's own white-balanced camera RGB, by the camera's matrix
+/// (LibRaw's, from the file's metadata): (working → camera, camera → working). An AI denoiser sees noise there
+/// as the sensor made it, before the colour matrix mixes the channels'. None when LibRaw has no matrix.
+pub fn camera_space(file: &[u8]) -> Option<(M3, M3)> {
+    let mut m = [0f32; 9];
+    // SAFETY: `file` outlives the call; the shim writes 9 floats into `m`
+    if unsafe { ol_raw_camera_matrix(file.as_ptr(), file.len(), m.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let cam_to_srgb = [[m[0], m[1], m[2]], [m[3], m[4], m[5]], [m[6], m[7], m[8]]];
+    let from = matmul(&crate::develop::M709_2020, &cam_to_srgb);
+    Some((inverse(&from)?, from))
+}
+
 /// Develops the RAW `file` (its bytes) to (width, height, interleaved linear Rec.2020), upright. Unknown
 /// names mean LibRaw's defaults (AHD, clip). With `proxy_edge`, a file at least twice that size comes
 /// back at half size without demosaicing, which is several times faster.
@@ -294,55 +300,39 @@ pub fn develop_ex(
     Ok((w, h, data))
 }
 
-/// Compute RGB Parade and Luma/Chroma Waveform scope RGBA8 images (`scope_w` x `scope_h` x 4 bytes each).
+/// RGB parade and luma waveform scopes as RGBA8 images (`scope_w` x `scope_h` x 4 bytes each): the C++
+/// fallback for `gpu::run_scopes`, drawing exactly what it draws.
 pub fn compute_scopes_cpu(rgba: &[u8], w: usize, h: usize, scope_w: usize, scope_h: usize) -> (Vec<u8>, Vec<u8>) {
-    let mut parade = vec![0u8; scope_w * scope_h * 4];
-    let mut waveform = vec![0u8; scope_w * scope_h * 4];
+    let mut parade = vec![0u32; scope_w * scope_h * 3];
+    let mut wave = vec![0u32; scope_w * scope_h * 4];
     if rgba.len() >= w * h * 4 && w > 0 && h > 0 && scope_w >= 3 && scope_h >= 2 {
-        unsafe {
-            ol_compute_scopes_parade_waveform(
-                rgba.as_ptr(),
-                w,
-                h,
-                scope_w,
-                scope_h,
-                parade.as_mut_ptr(),
-                waveform.as_mut_ptr(),
-            );
-        }
+        // SAFETY: `rgba` holds w * h pixels and the bins are the sizes `ol_scope_bins` fills
+        unsafe { ol_scope_bins(rgba.as_ptr(), w, h, scope_w, scope_h, parade.as_mut_ptr(), wave.as_mut_ptr()) };
     }
-    (parade, waveform)
+    crate::gpu::render_scopes(&parade, &wave, scope_w, scope_h, w * h)
 }
 
-/// Compute focus-peaking mask (`0..255`), focus sharpness score (`0..100`), eye openness EAR, and blink flag.
-pub fn focus_peaking_and_blink(
-    rgb: &[f32],
-    w: usize,
-    h: usize,
-    threshold: f32,
-    face_boxes_xywh: &[[f32; 4]],
-) -> (Vec<u8>, f32, f32, bool) {
+/// Focus-peaking mask (`0..255`) and focus score (`0..100`): of the eyes when `eyes` (per face, its two eye
+/// patches: `faces::eye_patches`) has any, else of the frame.
+pub fn focus_peaking(rgb: &[f32], w: usize, h: usize, threshold: f32, eyes: &[[f32; 8]]) -> (Vec<u8>, f32) {
     let mut mask = vec![0u8; w * h];
     let mut score = 0.0f32;
-    let mut ear = 0.32f32;
-    let mut blink: c_int = 0;
     if rgb.len() >= w * h * 3 && w >= 3 && h >= 3 {
+        // SAFETY: `rgb` holds w * h pixels, `eyes` its own length of 8-float faces, `mask` w * h bytes
         unsafe {
-            ol_compute_focus_peaking_and_blink(
+            ol_compute_focus_peaking(
                 rgb.as_ptr(),
                 w,
                 h,
                 threshold,
-                if face_boxes_xywh.is_empty() { std::ptr::null() } else { face_boxes_xywh.as_ptr() as *const f32 },
-                face_boxes_xywh.len(),
+                if eyes.is_empty() { std::ptr::null() } else { eyes.as_ptr() as *const f32 },
+                eyes.len(),
                 mask.as_mut_ptr(),
                 &mut score,
-                &mut ear,
-                &mut blink,
             );
         }
     }
-    (mask, score, ear, blink != 0)
+    (mask, score)
 }
 
 /// O(N) He et al. Guided Filter producing 16-bit (`0..65535`) and float (`0..1`) feathered alpha masks.
@@ -367,53 +357,50 @@ pub fn guided_feather_16bit(guide_luma: &[f32], raw_alpha: &[f32], w: usize, h: 
     (a16, af)
 }
 
-/// Lossless JPEG DCT transform via libturbojpeg (`op`: `"hflip"`, `"vflip"`, `"rot90"`, `"rot180"`, `"rot270"`, `"crop"`).
-pub fn jpeg_lossless_transform(
-    jpeg_bytes: &[u8],
-    op: &str,
-    crop: Option<[i32; 4]>,
-) -> Result<Vec<u8>, String> {
-    let op_code = match op {
-        "hflip" => 1,
-        "vflip" => 2,
-        "transpose" => 3,
-        "transverse" => 4,
-        "rot90" | "90" => 5,
-        "rot180" | "180" => 6,
-        "rot270" | "270" | "-90" => 7,
-        _ => 0,
-    };
-    let [cx, cy, cw, ch] = crop.unwrap_or([0, 0, 0, 0]);
-    let mut out_ptr: *mut u8 = std::ptr::null_mut();
-    let mut out_len: usize = 0;
-    let mut err_buf = [0 as c_char; 160];
-    let rc = unsafe {
-        ol_jpeg_lossless_transform(
-            jpeg_bytes.as_ptr(),
-            jpeg_bytes.len(),
-            op_code,
-            cx,
-            cy,
-            cw,
-            ch,
-            &mut out_ptr,
-            &mut out_len,
-            err_buf.as_mut_ptr(),
-        )
-    };
-    if rc != 0 || out_ptr.is_null() {
-        let msg = unsafe { CStr::from_ptr(err_buf.as_ptr()) }.to_string_lossy().to_string();
-        return Err(if msg.is_empty() { "lossless JPEG transform failed".into() } else { msg });
+/// Lossless JPEG transform (libjpeg-turbo): rotate or flip by moving the compressed DCT blocks, or crop on
+/// block boundaries, without recompressing (`op`: `hflip`, `vflip`, `transpose`, `transverse`, `rot90`,
+/// `rot180`, `rot270`, or anything else with `crop` [x, y, w, h] in pixels). A transform that would have to
+/// move the partial blocks at the right or bottom edge is refused, not trimmed: the result replaces the
+/// original file.
+pub fn jpeg_lossless_transform(jpeg_bytes: &[u8], op: &str, crop: Option<[i32; 4]>) -> Result<Vec<u8>, String> {
+    use turbojpeg::{Transform, TransformCrop, TransformOp};
+    let mut t = Transform::op(match op {
+        "hflip" => TransformOp::Hflip,
+        "vflip" => TransformOp::Vflip,
+        "transpose" => TransformOp::Transpose,
+        "transverse" => TransformOp::Transverse,
+        "rot90" | "90" => TransformOp::Rot90,
+        "rot180" | "180" => TransformOp::Rot180,
+        "rot270" | "270" | "-90" => TransformOp::Rot270,
+        _ => TransformOp::None,
+    });
+    t.perfect = true;
+    let header = turbojpeg::read_header(jpeg_bytes).map_err(|e| format!("not a JPEG libjpeg-turbo can read: {e}"))?;
+    let (mw, mh) = (header.subsamp.mcu_width(), header.subsamp.mcu_height());
+    if let Some([x, y, w, h]) = crop.filter(|c| c[2] > 0 && c[3] > 0) {
+        // the origin snaps back to a block boundary, and the region grows to keep the requested edges
+        let (x, y) = ((x.max(0) as usize).min(header.width - 1), (y.max(0) as usize).min(header.height - 1));
+        let (ax, ay) = (x / mw * mw, y / mh * mh);
+        let width = (x + w as usize - ax).clamp(1, header.width - ax);
+        let height = (y + h as usize - ay).clamp(1, header.height - ay);
+        t.crop = Some(TransformCrop { x: ax, y: ay, width: Some(width), height: Some(height) });
     }
-    let vec = unsafe { std::slice::from_raw_parts(out_ptr, out_len) }.to_vec();
-    unsafe { ol_free_buf(out_ptr as *mut c_void) };
-    Ok(vec)
+    turbojpeg::transform(&t, jpeg_bytes).map(|b| b.to_vec()).map_err(|e| {
+        if e.to_string().to_ascii_lowercase().contains("perfect") {
+            format!(
+                "{op} can't be lossless for this JPEG: its {}×{} px size isn't a whole number of its {mw}×{mh} px blocks, so the edge blocks would be lost",
+                header.width, header.height
+            )
+        } else {
+            format!("lossless JPEG transform: {e}")
+        }
+    })
 }
 
-/// Decode a HEIC / HEIF / AVIF container via hardware-accelerated native ImageIO / libheif into
-/// `(width, height, rgb8_bytes, optional_icc_profile_bytes)`.
-pub fn decode_heif(data: &[u8], max_edge: Option<u32>) -> Result<(u32, u32, Vec<u8>, Option<Vec<u8>>), String> {
-    let mut rgb_ptr: *mut u8 = std::ptr::null_mut();
+/// Decode a HEIC / HEIF / AVIF container with ImageIO into `(width, height, 16-bit RGB, ICC profile)`,
+/// upright. 16 bits keep a 10-bit file's levels.
+pub fn decode_heif(data: &[u8], max_edge: Option<u32>) -> Result<(u32, u32, Vec<u16>, Option<Vec<u8>>), String> {
+    let mut rgb_ptr: *mut u16 = std::ptr::null_mut();
     let mut w: u32 = 0;
     let mut h: u32 = 0;
     let mut icc_ptr: *mut u8 = std::ptr::null_mut();
@@ -475,9 +462,9 @@ mod tests {
                 rgb[i + 2] = 0.9;
             }
         }
-        let (mask, score, ear, _blink) = super::focus_peaking_and_blink(&rgb, 32, 32, 0.05, &[[0.2, 0.2, 0.5, 0.5]]);
+        let (mask, score) = super::focus_peaking(&rgb, 32, 32, 0.05, &[[0.2, 0.2, 0.25, 0.2, 0.55, 0.2, 0.25, 0.2]]);
         assert_eq!(mask.len(), 32 * 32);
-        assert!(score > 0.0 && ear > 0.0);
+        assert!(score > 0.0 && mask.iter().any(|&m| m > 0));
 
         let guide: Vec<f32> = (0..32 * 32).map(|i| (i % 32) as f32 / 31.0).collect();
         let raw_a: Vec<f32> = (0..32 * 32).map(|i| if (i % 32) >= 16 { 1.0 } else { 0.0 }).collect();
@@ -485,6 +472,128 @@ mod tests {
         assert_eq!(a16.len(), 32 * 32);
         assert!(af[0] < 0.2 && af[31] > 0.8);
         assert!(a16[31] > 50000);
+    }
+
+    /// Lossless JPEG transforms: a 90° turn swaps the size and decodes to the turned picture, a crop keeps
+    /// the requested region (its origin snapped to a block), and a size that isn't whole blocks is refused.
+    #[test]
+    fn jpeg_lossless_transforms() {
+        let jpeg = |w: u32, h: u32| {
+            let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x * 4) as u8, (y * 5) as u8, ((x + y) * 2) as u8]));
+            let mut out = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 95).encode_image(&img).unwrap();
+            out
+        };
+        let src = jpeg(64, 48);
+        let rot = super::jpeg_lossless_transform(&src, "rot90", None).unwrap();
+        let (a, b) = (image::load_from_memory(&src).unwrap().to_rgb8(), image::load_from_memory(&rot).unwrap().to_rgb8());
+        assert_eq!(b.dimensions(), (48, 64));
+        let turned = image::imageops::rotate90(&a);
+        let worst = turned.as_raw().iter().zip(b.as_raw()).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
+        assert!(worst <= 2, "rotated pixels differ by {worst}");
+        let crop = super::jpeg_lossless_transform(&src, "crop", Some([5, 5, 20, 20])).unwrap();
+        assert_eq!(image::load_from_memory(&crop).unwrap().width(), 25);
+        let e = super::jpeg_lossless_transform(&jpeg(70, 50), "rot90", None).unwrap_err();
+        assert!(e.contains("can't be lossless"), "{e}");
+    }
+
+    /// Set OPTIXEL_TEST_HEIC to a 10-bit HEIC or AVIF: it decodes with more than 8 bits of levels.
+    #[test]
+    fn decodes_heif_at_16_bits() {
+        let Some(p) = std::env::var_os("OPTIXEL_TEST_HEIC") else { return };
+        let (w, h, rgb, icc) = super::decode_heif(&std::fs::read(&p).unwrap(), None).unwrap();
+        let levels = rgb.iter().step_by(3).collect::<std::collections::HashSet<_>>().len();
+        eprintln!("{w}x{h}, {levels} red levels, ICC {:?} bytes", icc.as_ref().map(Vec::len));
+        assert_eq!(rgb.len(), (w * h * 3) as usize);
+        assert!(levels > 256, "{levels} levels: decoded at 8 bits");
+    }
+
+    /// Our Bayer demosaics on synthetic scenes, for each of the four 2x2 layouts: a flat grey comes back
+    /// flat (no maze, no colour cast), a scene of colour ramps and a soft-edged disc comes back close to the
+    /// truth, and on a noisy mosaic LMMSE (the high-ISO choice) is at least as clean as RCD.
+    #[test]
+    fn demosaics_reconstruct_synthetic_scenes() {
+        use std::ffi::c_int;
+        unsafe extern "C" {
+            fn ol_demosaic_bayer_rcd(cfa: *const f32, w: usize, h: usize, pat: c_int, out: *mut f32);
+            fn ol_demosaic_bayer_amaze(cfa: *const f32, w: usize, h: usize, pat: c_int, out: *mut f32);
+            fn ol_demosaic_bayer_lmmse(cfa: *const f32, w: usize, h: usize, pat: c_int, out: *mut f32);
+        }
+        type F = unsafe extern "C" fn(*const f32, usize, usize, c_int, *mut f32);
+        let algos: [(&str, F); 3] = [("rcd", ol_demosaic_bayer_rcd), ("amaze", ol_demosaic_bayer_amaze), ("lmmse", ol_demosaic_bayer_lmmse)];
+        let (w, h) = (160usize, 120usize);
+        // colour of each 2x2 site per layout (0 RGGB, 1 BGGR, 2 GRBG, 3 GBRG), as `decode_cfa_pat`
+        let layout = |p: usize, r: usize, c: usize| [[[0, 1], [1, 2]], [[2, 1], [1, 0]], [[1, 0], [2, 1]], [[1, 2], [0, 1]]][p][r & 1][c & 1];
+        let scene = |r: usize, c: usize| {
+            let (x, y) = (c as f32, r as f32);
+            let d = ((x - 80.0).powi(2) + (y - 60.0).powi(2)).sqrt();
+            let disc = 1.0 - 0.7 * (1.0 - ((d - 30.0) / 1.5).clamp(-1.0, 1.0)) / 2.0;
+            [(0.15 + 0.6 * x / w as f32) * disc, (0.25 + 0.5 * y / h as f32) * disc, (0.5 + 0.25 * (x / 9.0).sin() * (y / 11.0).cos()) * disc]
+        };
+        let mut noise = 0x9e37_79b9_7f4a_7c15u64;
+        let mut gauss = || {
+            let mut s = 0.0;
+            for _ in 0..12 {
+                noise ^= noise << 13;
+                noise ^= noise >> 7;
+                noise ^= noise << 17;
+                s += (noise >> 40) as f32 / (1u64 << 24) as f32;
+            }
+            s - 6.0
+        };
+        // PSNR inside a 6 px margin
+        let psnr = |out: &[f32], truth: &dyn Fn(usize, usize) -> [f32; 3]| {
+            let (mut se, mut n) = (0.0f64, 0usize);
+            for r in 6..h - 6 {
+                for c in 6..w - 6 {
+                    let t = truth(r, c);
+                    for k in 0..3 {
+                        se += ((out[(r * w + c) * 3 + k] - t[k]) as f64).powi(2);
+                        n += 1;
+                    }
+                }
+            }
+            10.0 * (1.0 / (se / n as f64)).log10()
+        };
+        let mut out = vec![0.0f32; w * h * 3];
+        for p in 0..4 {
+            for (name, f) in algos {
+                let flat = vec![0.4f32; w * h];
+                unsafe { f(flat.as_ptr(), w, h, p as c_int, out.as_mut_ptr()) };
+                let worst = out.iter().map(|v| (v - 0.4).abs()).fold(0.0f32, f32::max);
+                assert!(worst < 1e-4, "{name} layout {p}: a flat field came back off by {worst}");
+
+                let cfa: Vec<f32> = (0..w * h).map(|i| scene(i / w, i % w)[layout(p, i / w, i % w)]).collect();
+                unsafe { f(cfa.as_ptr(), w, h, p as c_int, out.as_mut_ptr()) };
+                let clean = psnr(&out, &scene);
+                eprintln!("{name} layout {p}: {clean:.1} dB");
+                assert!(clean > 30.0, "{name} layout {p}: {clean:.1} dB");
+            }
+        }
+        // high ISO: the same scene with sensor noise
+        let noisy: Vec<f32> = (0..w * h).map(|i| scene(i / w, i % w)[layout(0, i / w, i % w)] + 0.03 * gauss()).collect();
+        let db: Vec<f64> = algos
+            .iter()
+            .map(|(_, f)| {
+                unsafe { f(noisy.as_ptr(), w, h, 0, out.as_mut_ptr()) };
+                psnr(&out, &scene)
+            })
+            .collect();
+        eprintln!("noisy: rcd {:.1} dB, amaze {:.1} dB, lmmse {:.1} dB", db[0], db[1], db[2]);
+        assert!(db[2] >= db[0] - 0.1, "LMMSE {:.1} dB vs RCD {:.1} dB on a noisy mosaic", db[2], db[0]);
+    }
+
+    /// Set OPTIXEL_TEST_RAW to a RAW file: its camera space round-trips the working space and keeps white
+    /// white (the camera matrix keeps neutral neutral).
+    #[test]
+    fn camera_space_of_a_real_file() {
+        let Some(p) = std::env::var_os("OPTIXEL_TEST_RAW") else { return };
+        let (to, from) = super::camera_space(&std::fs::read(&p).unwrap()).expect("a camera matrix");
+        let px = [0.2f32, 0.5, 0.8];
+        let back = crate::develop::mul(&from, crate::develop::mul(&to, px));
+        assert!((0..3).all(|c| (back[c] - px[c]).abs() < 1e-4), "{back:?}");
+        let white = crate::develop::mul(&from, [1.0; 3]);
+        assert!(white.iter().all(|&v| (v - 1.0).abs() < 0.02), "camera white lands on {white:?}");
     }
 
     /// Set OPTIXEL_TEST_RAW to a RAW file: every demosaic (including RCD, AMaZE, LMMSE) and highlight
@@ -518,8 +627,12 @@ mod tests {
             let max = d.iter().copied().fold(0.0, f32::max);
             eprintln!("  {name}: mean {:.4}, max {max:.3}", mean(&d));
             assert_eq!((dw, dh), (w, h), "{name}");
-            // the same exposure as a clipped decode wherever nothing is blown
-            assert!((mean(&d) / mean(&clip) - 1.0).abs() < 0.1, "{name} changed the exposure");
+            // the same exposure as a clipped decode wherever nothing is blown (a blown sky rightly rises)
+            let (a, b) = clip.chunks(3).zip(d.chunks(3)).filter(|(c, _)| c.iter().all(|&v| v < 0.9)).fold((0.0f64, 0.0f64), |(a, b), (c, e)| {
+                (a + c.iter().sum::<f32>() as f64, b + e.iter().sum::<f32>() as f64)
+            });
+            assert!(max > 1.0 || name != &"unclip", "{name} kept nothing above white");
+            assert!((b / a - 1.0).abs() < 0.05, "{name} changed the exposure of what is not blown: {:.4}", b / a);
         }
         let t = std::time::Instant::now();
         let (pw, ph, proxy) = super::develop(&file, "", "", Some(1600)).unwrap();
@@ -528,3 +641,4 @@ mod tests {
         assert!((mean(&proxy) / mean(&clip) - 1.0).abs() < 0.02);
     }
 }
+

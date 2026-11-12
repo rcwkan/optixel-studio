@@ -15,11 +15,12 @@ use std::path::Path;
 pub const DETECT: &str = "yoloface_8n.onnx";
 pub const RECOGNISE: &str = "arcface_w600k_r50.onnx";
 pub const SWAP: &str = "hyperswap_1a_256.onnx";
+pub const LANDMARKS: &str = "2dfan4.onnx";
 
 /// Five landmarks: eyes, nose tip, mouth corners (photo pixels).
 type Lm = [[f32; 2]; 5];
 /// 2×3 affine, row-major: x' = m0·x + m1·y + m2, y' = m3·x + m4·y + m5.
-type M = [f32; 6];
+pub(crate) type M = [f32; 6];
 
 /// FaceFusion's warp templates (fractions of the crop side).
 const ARCFACE_112_V2: Lm = [[0.34191607, 0.46157411], [0.65653393, 0.45983393], [0.500225, 0.64050536], [0.37097589, 0.82469196], [0.63151696, 0.82325089]];
@@ -88,7 +89,7 @@ fn sample(buf: &[f32], w: usize, h: usize, ch: usize, x: f32, y: f32, out: &mut 
 
 /// The `side`² crop of `img` that `m` (photo → crop) maps out, as interleaved sRGB 0-1. Each pixel averages n×n
 /// samples, n the shrink factor, so a big face does not alias (FaceFusion uses INTER_AREA for this).
-fn warp(img: &Img, m: &M, side: usize) -> Vec<f32> {
+pub(crate) fn warp(img: &Img, m: &M, side: usize) -> Vec<f32> {
     if img.w == 0 || img.h == 0 || img.px.len() < img.w * img.h || side == 0 {
         return vec![0f32; side * side * 3];
     }
@@ -136,6 +137,40 @@ fn iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
         return 0.0;
     }
     (inter / denom).clamp(0.0, 1.0)
+}
+
+/// 2DFAN4's 68 landmarks (photo pixels) of the face in `bbox` (x0, y0, x1, y1) and their confidence (0-1):
+/// the face scaled so its longer side is 195 px of the 256 px input and centred, as FaceFusion crops it.
+pub fn landmarks68(s: &mut Session, img: &Img, bbox: [f32; 4], bgr: bool) -> Result<(Vec<[f32; 2]>, f32), String> {
+    const SIDE: usize = 256;
+    let scale = 195.0 / (bbox[2] - bbox[0]).max(bbox[3] - bbox[1]).max(1.0);
+    let (tx, ty) = ((SIDE as f32 - (bbox[0] + bbox[2]) * scale) * 0.5, (SIDE as f32 - (bbox[1] + bbox[3]) * scale) * 0.5);
+    let rgb = warp(img, &[scale, 0.0, tx, 0.0, scale, ty], SIDE);
+    let input = Tensor::from_array(([1usize, 3, SIDE, SIDE], planes(&rgb, SIDE, bgr, |v| v))).map_err(|e| format!("landmark input: {e}"))?;
+    let name = s.inputs().first().ok_or("the landmark model has no inputs")?.name().to_string();
+    let out = s.run(ort::inputs![name.as_str() => input]).map_err(|e| format!("the landmark model failed: {e}"))?;
+    if out.len() < 2 {
+        return Err("the landmark model returned too few outputs".into());
+    }
+    let (shape, lm) = out[0].try_extract_tensor::<f32>().map_err(|e| format!("landmark output: {e}"))?;
+    let (hshape, hm) = out[1].try_extract_tensor::<f32>().map_err(|e| format!("landmark output: {e}"))?;
+    if shape.len() != 3 || shape[1] != 68 || shape[2] < 2 || hshape.len() != 4 {
+        return Err(format!("the landmark model returned an unexpected shape {shape:?}"));
+    }
+    let k = shape[2] as usize;
+    // points come at the 64 px heatmap's scale
+    let pts = (0..68).map(|i| [(lm[i * k] * 4.0 - tx) / scale, (lm[i * k + 1] * 4.0 - ty) / scale]).collect();
+    let cell = (hshape[2] * hshape[3]) as usize;
+    let peak: f32 = (0..68).map(|i| hm[i * cell..(i + 1) * cell].iter().fold(0f32, |a, &b| a.max(b))).sum::<f32>() / 68.0;
+    Ok((pts, (peak / 0.9).clamp(0.0, 1.0)))
+}
+
+/// Eye aspect ratio (Soukupová & Čech) of 68 landmarks, the mean of the two eyes': the lids' opening over
+/// the eye's width, about 0.3 open and under 0.2 shut.
+pub fn eye_aspect(pts: &[[f32; 2]]) -> f32 {
+    let d = |a: usize, b: usize| (pts[a][0] - pts[b][0]).hypot(pts[a][1] - pts[b][1]);
+    let ear = |e: usize| (d(e + 1, e + 5) + d(e + 2, e + 4)) / (2.0 * d(e, e + 3)).max(1e-3);
+    (ear(36) + ear(42)) / 2.0
 }
 
 /// Faces in `img`, best first (YOLOFace at 640, score > 0.5, NMS at IoU 0.4).
@@ -351,3 +386,4 @@ mod tests {
         eprintln!("wrote {}", out.display());
     }
 }
+

@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { message, open } from "@tauri-apps/plugin-dialog";
 import { ReactNode, useEffect, useId, useRef, useState } from "react";
 import { api, AutoFunction, CloudAccount, CloudFolder, Culling, fileManagerName, Filter, flagName, FolderLoading, FolderProgress, ImmichAlbum, JobProgress, LABEL_COLORS, LABELS, NetworkDrive, Photo, Settings, Source, thumbUrl } from "./api";
 import { AutoView, FUNCS } from "./AutoView";
@@ -1450,7 +1450,11 @@ function Metadata(p: Props & { photo: Photo }) {
               {/\.(jpe?g)$/i.test(ph.filename) && (
                 <Btn
                   onClick={async () => {
-                    await api.jpegLossless(ph.id, "rot90");
+                    try {
+                      await api.jpegLossless(ph.id, "rot90");
+                    } catch (e) {
+                      await message(String(e), { title: "Lossless rotate", kind: "error" });
+                    }
                   }}
                   title="SIMD Lossless JPEG 90° DCT block rotation (libturbojpeg, zero recompression)"
                 >

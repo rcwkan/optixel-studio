@@ -234,19 +234,90 @@ pub fn to_culling(xmp: &AdobeXmp) -> Option<Culling> {
     })
 }
 
-/// Format an Adobe Lightroom / Camera Raw `.xmp` XML document from `Photo` + `Develop`.
-pub fn format_adobe_xmp(
-    p: &Photo,
-    d: &Develop,
-    copyright: Option<&str>,
-    creator: Option<&str>,
-) -> String {
-    let rating = if p.flag == -1 { -1 } else { p.rating.clamp(0, 5) };
-    let pick = match p.flag {
-        1 => 1,
-        -1 => -1,
-        _ => 0,
-    };
+const SKELETON: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Optixel Studio">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+   xmp:CreatorTool="Optixel Studio">
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+"#;
+
+const NAMESPACES: [(&str, &str); 3] = [
+    ("xmp", "http://ns.adobe.com/xap/1.0/"),
+    ("dc", "http://purl.org/dc/elements/1.1/"),
+    ("crs", "http://ns.adobe.com/camera-raw-settings/1.0/"),
+];
+
+/// A sidecar this app wrote (rewritten freely). Any other (Lightroom's) is only ever merged into.
+pub fn is_ours(xml: &str) -> bool {
+    xml.contains(r#"x:xmptk="Optixel Studio""#)
+}
+
+/// Byte index of the `>` (or the `/` of `/>`) closing the first `<rdf:Description` start tag.
+fn desc_tag_end(xml: &str) -> Option<usize> {
+    let start = xml.find("<rdf:Description")?;
+    let mut quote = None;
+    for (i, c) in xml[start..].char_indices() {
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '>') => return Some(start + if xml[..start + i].ends_with('/') { i - 1 } else { i }),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Property `name` (`prefix:Local`) set to `value`: replaced where it already is (attribute or simple
+/// element), else added to the first `rdf:Description`, declaring its namespace there if nothing above does.
+fn set_attr(xml: &mut String, name: &str, value: &str) {
+    let v = xml_escape(value);
+    let n = regex::escape(name);
+    let attr = Regex::new(&format!(r#"(\s{n}\s*=\s*)(?:"[^"]*"|'[^']*')"#)).unwrap();
+    if let Some(c) = attr.captures(xml) {
+        let (m, pre) = (c.get(0).unwrap().range(), c[1].to_string());
+        xml.replace_range(m, &format!("{pre}\"{v}\""));
+        return;
+    }
+    let elem = Regex::new(&format!(r#"<{n}\b[^>]*>[^<]*</{n}>"#)).unwrap();
+    if let Some(m) = elem.find(xml).map(|m| m.range()) {
+        xml.replace_range(m, &format!("<{name}>{v}</{name}>"));
+        return;
+    }
+    let Some(end) = desc_tag_end(xml) else { return };
+    let mut add = format!("\n   {name}=\"{v}\"");
+    if let Some((prefix, uri)) = NAMESPACES.iter().find(|(p, _)| name.starts_with(&format!("{p}:")))
+        && !xml[..end].contains(&format!("xmlns:{prefix}="))
+    {
+        add = format!("\n    xmlns:{prefix}=\"{uri}\"{add}");
+    }
+    xml.insert_str(end, &add);
+}
+
+/// Element `name` replaced by (or, when missing, added as) `<name>inner</name>`.
+fn set_elem(xml: &mut String, name: &str, inner: &str) {
+    let new = format!("<{name}>{inner}</{name}>");
+    let n = regex::escape(name);
+    let re = Regex::new(&format!(r#"(?s)<{n}\b[^>]*>.*?</{n}>"#)).unwrap();
+    if let Some(m) = re.find(xml).map(|m| m.range()) {
+        xml.replace_range(m, &new);
+    } else if let Some(i) = xml.find("</rdf:Description>") {
+        xml.insert_str(i, &format!(" {new}\n  "));
+    } else if let Some(end) = desc_tag_end(xml).filter(|&e| xml[e..].starts_with("/>")) {
+        xml.replace_range(end..end + 2, &format!(">\n   {new}\n  </rdf:Description>"));
+    }
+}
+
+/// Our catalog fields and the develop settings that differ from the defaults, written into `base` (an
+/// existing sidecar, or a fresh skeleton). Everything else in `base` is kept, and keywords are added to its own.
+/// Settings left at their defaults are not written, so Lightroom keeps (or applies) its own.
+pub fn merge_adobe_xmp(base: &str, p: &Photo, d: &Develop, copyright: Option<&str>, creator: Option<&str>) -> String {
+    let mut x = base.to_string();
+    set_attr(&mut x, "xmp:Rating", &(if p.flag == -1 { -1 } else { p.rating.clamp(0, 5) }).to_string());
     let label = match p.color_label.as_str() {
         "red" => "Red",
         "yellow" => "Yellow",
@@ -255,98 +326,79 @@ pub fn format_adobe_xmp(
         "purple" => "Purple",
         _ => "",
     };
-    let has_crop = d.crop.x > 1e-4 || d.crop.y > 1e-4 || d.crop.w < 0.9999 || d.crop.h < 0.9999 || d.crop.angle.abs() > 1e-4;
-    let crop_right = (d.crop.x + d.crop.w).clamp(0.0, 1.0);
-    let crop_bottom = (d.crop.y + d.crop.h).clamp(0.0, 1.0);
+    set_attr(&mut x, "xmp:Label", label);
+    set_attr(&mut x, "crs:Pick", &p.flag.clamp(-1, 1).to_string());
 
-    let mut children = String::new();
-    let kws: Vec<&str> = p.keywords.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
-    if !kws.is_empty() {
-        children.push_str("   <dc:subject>\n    <rdf:Bag>\n");
-        for kw in kws {
-            children.push_str(&format!("     <rdf:li>{}</rdf:li>\n", xml_escape(kw)));
+    let def = Develop::default();
+    if d.white_balance != def.white_balance {
+        set_attr(&mut x, "crs:WhiteBalance", "Custom");
+        set_attr(&mut x, "crs:Temperature", &format!("{:.0}", d.white_balance.temperature_k));
+        set_attr(&mut x, "crs:Tint", &format!("{:+.0}", d.white_balance.tint));
+    }
+    if d.basic_tone.exposure != def.basic_tone.exposure {
+        set_attr(&mut x, "crs:Exposure2012", &format!("{:+.2}", d.basic_tone.exposure));
+    }
+    for (name, v, dv) in [
+        ("crs:Contrast2012", d.basic_tone.contrast, def.basic_tone.contrast),
+        ("crs:Highlights2012", d.basic_tone.highlights, def.basic_tone.highlights),
+        ("crs:Shadows2012", d.basic_tone.shadows, def.basic_tone.shadows),
+        ("crs:Whites2012", d.basic_tone.whites, def.basic_tone.whites),
+        ("crs:Blacks2012", d.basic_tone.blacks, def.basic_tone.blacks),
+        ("crs:Texture", d.presence.texture, def.presence.texture),
+        ("crs:Clarity2012", d.presence.clarity, def.presence.clarity),
+        ("crs:Dehaze", d.presence.dehaze, def.presence.dehaze),
+        ("crs:Vibrance", d.presence.vibrance, def.presence.vibrance),
+        ("crs:Saturation", d.presence.saturation, def.presence.saturation),
+    ] {
+        if v != dv {
+            set_attr(&mut x, name, &format!("{v:+.0}"));
         }
-        children.push_str("    </rdf:Bag>\n   </dc:subject>\n");
     }
-    if let Some(cr) = copyright.filter(|s| !s.trim().is_empty()) {
-        children.push_str(&format!(
-            "   <dc:rights>\n    <rdf:Alt>\n     <rdf:li xml:lang=\"x-default\">{}</rdf:li>\n    </rdf:Alt>\n   </dc:rights>\n",
-            xml_escape(cr.trim())
-        ));
+    for (name, v, dv) in [
+        ("crs:Sharpness", d.detail.sharpening, def.detail.sharpening),
+        ("crs:LuminanceSmoothing", d.detail.luminance_noise_reduction, def.detail.luminance_noise_reduction),
+        ("crs:ColorNoiseReduction", d.detail.color_noise_reduction, def.detail.color_noise_reduction),
+    ] {
+        if v != dv {
+            set_attr(&mut x, name, &format!("{v:.0}"));
+        }
     }
-    if let Some(au) = creator.filter(|s| !s.trim().is_empty()) {
-        children.push_str(&format!(
-            "   <dc:creator>\n    <rdf:Seq>\n     <rdf:li>{}</rdf:li>\n    </rdf:Seq>\n   </dc:creator>\n",
-            xml_escape(au.trim())
-        ));
+    let c = &d.crop;
+    if c.x > 1e-4 || c.y > 1e-4 || c.w < 0.9999 || c.h < 0.9999 || c.angle.abs() > 1e-4 {
+        set_attr(&mut x, "crs:HasCrop", "True");
+        set_attr(&mut x, "crs:CropLeft", &format!("{:.6}", c.x));
+        set_attr(&mut x, "crs:CropTop", &format!("{:.6}", c.y));
+        set_attr(&mut x, "crs:CropRight", &format!("{:.6}", (c.x + c.w).clamp(0.0, 1.0)));
+        set_attr(&mut x, "crs:CropBottom", &format!("{:.6}", (c.y + c.h).clamp(0.0, 1.0)));
+        set_attr(&mut x, "crs:CropAngle", &format!("{:.2}", c.angle));
     }
 
-    format!(
-        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Optixel Studio">
- <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-  <rdf:Description rdf:about=""
-    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
-    xmlns:dc="http://purl.org/dc/elements/1.1/"
-    xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
-    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
-   xmp:CreatorTool="Optixel Studio"
-   xmp:Rating="{rating}"
-   xmp:Label="{label}"
-   crs:Version="16.0"
-   crs:ProcessVersion="11.0"
-   crs:Pick="{pick}"
-   crs:Temperature="{temp:.0}"
-   crs:Tint="{tint:+.0}"
-   crs:Exposure2012="{exp:+.2}"
-   crs:Contrast2012="{con:+.0}"
-   crs:Highlights2012="{hi:+.0}"
-   crs:Shadows2012="{sh:+.0}"
-   crs:Whites2012="{wh:+.0}"
-   crs:Blacks2012="{bl:+.0}"
-   crs:Texture="{tex:+.0}"
-   crs:Clarity2012="{cla:+.0}"
-   crs:Dehaze="{deh:+.0}"
-   crs:Vibrance="{vib:+.0}"
-   crs:Saturation="{sat:+.0}"
-   crs:Sharpness="{shp:.0}"
-   crs:LuminanceSmoothing="{lnr:.0}"
-   crs:ColorNoiseReduction="{cnr:.0}"
-   crs:HasCrop="{has_crop}"
-   crs:CropLeft="{cl:.6}"
-   crs:CropTop="{ct:.6}"
-   crs:CropRight="{cr:.6}"
-   crs:CropBottom="{cb:.6}"
-   crs:CropAngle="{ca:.2}">
-{children}  </rdf:Description>
- </rdf:RDF>
-</x:xmpmeta>
-"#,
-        temp = d.white_balance.temperature_k,
-        tint = d.white_balance.tint,
-        exp = d.basic_tone.exposure,
-        con = d.basic_tone.contrast,
-        hi = d.basic_tone.highlights,
-        sh = d.basic_tone.shadows,
-        wh = d.basic_tone.whites,
-        bl = d.basic_tone.blacks,
-        tex = d.presence.texture,
-        cla = d.presence.clarity,
-        deh = d.presence.dehaze,
-        vib = d.presence.vibrance,
-        sat = d.presence.saturation,
-        shp = d.detail.sharpening,
-        lnr = d.detail.luminance_noise_reduction,
-        cnr = d.detail.color_noise_reduction,
-        has_crop = if has_crop { "True" } else { "False" },
-        cl = d.crop.x,
-        ct = d.crop.y,
-        cr = crop_right,
-        cb = crop_bottom,
-        ca = d.crop.angle,
-    )
+    let mut kws = extract_list(&x, "dc:subject");
+    for k in p.keywords.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if !kws.iter().any(|e| e == k) {
+            kws.push(k.to_string());
+        }
+    }
+    if !kws.is_empty() {
+        let li: String = kws.iter().map(|k| format!("<rdf:li>{}</rdf:li>", xml_escape(k))).collect();
+        set_elem(&mut x, "dc:subject", &format!("<rdf:Bag>{li}</rdf:Bag>"));
+    }
+    if let Some(cr) = copyright.map(str::trim).filter(|s| !s.is_empty()) {
+        set_elem(&mut x, "dc:rights", &format!(r#"<rdf:Alt><rdf:li xml:lang="x-default">{}</rdf:li></rdf:Alt>"#, xml_escape(cr)));
+    }
+    if let Some(au) = creator.map(str::trim).filter(|s| !s.is_empty()) {
+        set_elem(&mut x, "dc:creator", &format!("<rdf:Seq><rdf:li>{}</rdf:li></rdf:Seq>", xml_escape(au)));
+    }
+    x
 }
 
-/// Write an Adobe `.xmp` sidecar next to `p.path` (preserving any existing `dc:rights` / `dc:creator` if none supplied).
+/// A fresh Optixel `.xmp` document for `Photo` + `Develop`.
+pub fn format_adobe_xmp(p: &Photo, d: &Develop, copyright: Option<&str>, creator: Option<&str>) -> String {
+    merge_adobe_xmp(SKELETON, p, d, copyright, creator)
+}
+
+/// Write the `.xmp` sidecar next to `p.path`. One of ours is rewritten (keeping its `dc:rights` /
+/// `dc:creator` if none are supplied); anyone else's (Lightroom's) is merged into, never replaced.
 pub fn write_adobe_xmp(
     p: &Photo,
     d: &Develop,
@@ -357,11 +409,20 @@ pub fn write_adobe_xmp(
         return Err("virtual copies and remote assets do not write disk .xmp sidecars".into());
     }
     let photo_path = Path::new(&p.path);
-    let existing = read_adobe_xmp(photo_path, None);
-    let eff_copyright = copyright.or_else(|| existing.as_ref().and_then(|x| x.copyright.as_deref()));
-    let eff_creator = creator.or_else(|| existing.as_ref().and_then(|x| x.creator.as_deref()));
-    let xml = format_adobe_xmp(p, d, eff_copyright, eff_creator);
-    let out_path = primary_xmp_path(photo_path);
+    let out_path = [primary_xmp_path(photo_path), photo_path.with_extension("XMP")]
+        .into_iter()
+        .find(|x| x.is_file())
+        .unwrap_or_else(|| primary_xmp_path(photo_path));
+    let existing = fs::read_to_string(&out_path).ok();
+    let xml = match existing.as_deref() {
+        Some(old) if !is_ours(old) => merge_adobe_xmp(old, p, d, copyright, creator),
+        old => {
+            let old = old.map(|x| parse_adobe_xmp_str(x, None));
+            let cr = copyright.or_else(|| old.as_ref().and_then(|x| x.copyright.as_deref()));
+            let au = creator.or_else(|| old.as_ref().and_then(|x| x.creator.as_deref()));
+            format_adobe_xmp(p, d, cr, au)
+        }
+    };
     fs::write(&out_path, xml).map_err(|e| format!("write {}: {e}", out_path.display()))?;
     Ok(out_path)
 }
@@ -370,20 +431,8 @@ pub fn write_adobe_xmp(
 mod tests {
     use super::*;
 
-    #[test]
-    fn roundtrips_lightroom_xmp_sidecar() {
-        let mut d = Develop::default();
-        d.basic_tone.exposure = 1.25;
-        d.basic_tone.highlights = -45.0;
-        d.basic_tone.shadows = 60.0;
-        d.presence.clarity = 25.0;
-        d.crop.x = 0.1;
-        d.crop.y = 0.15;
-        d.crop.w = 0.8;
-        d.crop.h = 0.7;
-        d.crop.angle = -2.5;
-
-        let p = Photo {
+    fn photo() -> Photo {
+        Photo {
             id: 42,
             master_id: None,
             copy_name: None,
@@ -406,7 +455,23 @@ mod tests {
             edited: true,
             thumb_v: 1,
             deleted_at: None,
-        };
+        }
+    }
+
+    #[test]
+    fn roundtrips_lightroom_xmp_sidecar() {
+        let mut d = Develop::default();
+        d.basic_tone.exposure = 1.25;
+        d.basic_tone.highlights = -45.0;
+        d.basic_tone.shadows = 60.0;
+        d.presence.clarity = 25.0;
+        d.crop.x = 0.1;
+        d.crop.y = 0.15;
+        d.crop.w = 0.8;
+        d.crop.h = 0.7;
+        d.crop.angle = -2.5;
+
+        let p = photo();
 
         let xml = format_adobe_xmp(&p, &d, Some("© 2026 Optixel Studio"), Some("Jane Doe"));
         let parsed = parse_adobe_xmp_str(&xml, None);
@@ -421,5 +486,37 @@ mod tests {
         assert!((parsed.develop.crop.x - 0.1).abs() < 1e-4);
         assert!((parsed.develop.crop.w - 0.8).abs() < 1e-4);
         assert!((parsed.develop.crop.angle - -2.5).abs() < 1e-2);
+        assert!(is_ours(&xml) && !xml.contains("crs:Temperature") && !xml.contains("crs:Sharpness"), "{xml}");
+    }
+
+    /// A Lightroom sidecar is merged into, never replaced: its own settings and keywords survive, and
+    /// only what we changed is written (declaring `crs:` where it was missing). Merging twice changes nothing.
+    #[test]
+    fn merges_into_a_lightroom_sidecar() {
+        let lr = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe XMP Core 7.0">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:lr="http://ns.adobe.com/lightroom/1.0/"
+   xmp:Rating="2"
+   xmp:Label="Red">
+   <dc:subject><rdf:Bag><rdf:li>travel</rdf:li></rdf:Bag></dc:subject>
+   <lr:hierarchicalSubject><rdf:Bag><rdf:li>places|Tokyo</rdf:li></rdf:Bag></lr:hierarchicalSubject>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>"#;
+        let mut d = Develop::default();
+        d.basic_tone.exposure = 0.5;
+        let p = Photo { rating: 4, flag: 0, keywords: "wedding, travel".into(), color_label: "".into(), ..photo() };
+        let x = merge_adobe_xmp(lr, &p, &d, None, None);
+        assert!(!is_ours(&x) && x.contains("places|Tokyo") && x.contains(r#"xmp:Rating="4""#) && x.contains(r#"xmp:Label="""#), "{x}");
+        assert_eq!(x.matches("xmlns:crs=").count(), 1, "{x}");
+        assert_eq!(x.matches("crs:Exposure2012=").count(), 1, "{x}");
+        assert!(!x.contains("crs:Temperature") && !x.contains("crs:Contrast2012"), "{x}");
+        let parsed = parse_adobe_xmp_str(&x, None);
+        assert_eq!(parsed.keywords, vec!["travel", "wedding"]);
+        assert!((parsed.develop.basic_tone.exposure - 0.5).abs() < 1e-3);
+        assert_eq!(merge_adobe_xmp(&x, &p, &d, None, None), x);
     }
 }

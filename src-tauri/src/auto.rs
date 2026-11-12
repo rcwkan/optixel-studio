@@ -30,7 +30,8 @@ pub const FUNCTIONS: &[&str] = &["cull", "edit", "mask", "enhance", "hdr", "blur
 /// Fewer edges than this and a frame (fog, a plain sky) is not judged sharp or blurred.
 const MIN_EDGES: u32 = 50;
 /// Bump when the analysis changes, so cached measurements are taken again.
-const ANALYSIS_VERSION: u32 = 1;
+// 2: blinks only on the face scan's faces
+const ANALYSIS_VERSION: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // Advanced settings
@@ -142,7 +143,8 @@ impl Default for EditSettings {
 pub struct MaskSettings {
     /// subject | sky | background | people (people: AI method only)
     pub targets: Vec<String>,
-    /// builtin (estimated on the photo, no model) | ai (the AI provider traces outlines)
+    /// builtin (estimated on the photo, no model) | ai (the AI provider traces outlines) | sam (SAM 3, on this
+    /// computer)
     pub method: String,
     pub feather: f32,
     pub edge_shift: f32,
@@ -449,14 +451,16 @@ fn sizes(detail: &str, full: u32) -> (u32, u32) {
 }
 
 /// Measurement key: the analysis version, size and the file's size and date (Immich assets never change).
-fn stamp(p: &Photo, detail: &str) -> String {
+/// What a cached measurement depends on: the analysis, the detail asked for, the file, and its faces (a face
+/// scan after the measurement changes the eyes it looks at).
+fn stamp(p: &Photo, detail: &str, faces: usize) -> String {
     let file = match remote::immich_id(&p.path) {
         Some(_) => "immich".to_string(),
         None => fs::metadata(&p.path)
             .map(|m| format!("{}:{}", m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs())))
             .unwrap_or_default(),
     };
-    format!("v{ANALYSIS_VERSION}/{detail}/{file}")
+    format!("v{ANALYSIS_VERSION}/{detail}/{file}/f{faces}")
 }
 
 /// The photo as the analysis sees it: a RAW's embedded preview when large enough (else the RAW itself), an
@@ -487,7 +491,13 @@ fn picture_of(core: &Core, path: &Path, edge: u32) -> Result<DynamicImage, Strin
 
 /// Measure one photo (`subject`: a box from the AI provider, measured fresh) or take its cached measurement.
 fn measure(core: &Core, p: &Photo, detail: &str, subject: Option<[f32; 4]>) -> Result<Metrics, String> {
-    let key = stamp(p, detail);
+    let master = p.master_id.unwrap_or(p.id);
+    // one statement each: a statement's DB lock is held to its end
+    let eyes = crate::faces::photo_eyes(&core.db(), master);
+    let boxes = crate::faces::photo_boxes(&core.db(), master);
+    // installing the landmark model changes what is known about eyes
+    let landmarks = crate::aimodel::model_file(&core.dir(), "face-landmarks-2dfan4", crate::faceswap::LANDMARKS).is_some();
+    let key = format!("{}/l{}", stamp(p, detail, eyes.len()), landmarks as u8);
     if subject.is_none()
         && let Some(m) = catalog::analysis(&core.db(), &p.path, &key)
     {
@@ -499,7 +509,17 @@ fn measure(core: &Core, p: &Photo, detail: &str, subject: Option<[f32; 4]>) -> R
     let got = img.width().max(img.height());
     let full = if full > 0 { full } else { got };
     // 100% needs the full-size file: a smaller preview (an Immich photo not opened yet) is judged at screen size
-    let m = vision::analyse(&img, edge, sizes(detail, full).1.min(got.max(2048)), subject);
+    let mut m = vision::analyse(&img, edge, sizes(detail, full).1.min(got.max(2048)), subject, &eyes);
+    // closed eyes: the faces' landmarks, the most closed face's eye aspect ratio
+    if landmarks && !boxes.is_empty() {
+        let rgb = vision::Rgb::from_image(&img, 2048);
+        let work = develop::Img { w: rgb.w, h: rgb.h, px: rgb.px.iter().map(|&p| develop::srgb_to_working(p)).collect() };
+        if let Some(ears) = crate::faces::eye_aspects(&core.dir(), &work, &boxes).filter(|e| !e.is_empty()) {
+            let shut = ears.iter().copied().fold(f32::MAX, f32::min);
+            m.eye_openness = Some(shut);
+            m.blink_detected = shut < crate::faces::BLINK_EAR;
+        }
+    }
     if subject.is_none() {
         catalog::save_analysis(&core.db(), &p.path, &key, &m)?;
     }
@@ -785,7 +805,7 @@ pub fn cull(core: &Arc<Core>, ids: &[i64], s: &CullSettings, provider: &str, job
         rows.push(json!({
             "id": p.id, "file": file_name(p), "quality": q[i].round(), "sharpness": m.sharpness.round(),
             "subject_sharpness": m.subject_sharpness.round(), "focus_peaking": m.focus_peaking_score.round(),
-            "eye_openness": (m.eye_openness * 100.0).round(), "blink": m.blink_detected,
+            "eye_openness": m.eye_openness.map(|e| (e * 100.0).round()), "blink": m.blink_detected,
             "exposure": m.exposure.round(), "noise": (m.noise * 10.0).round() / 10.0,
             "motion": (m.motion * 100.0).round(), "burst": in_burst.then_some(group.len()), "best": is_best,
             "flag": u.flag, "rating": u.rating, "label": u.color_label, "reasons": why, "keywords": tags,
@@ -1235,29 +1255,46 @@ pub fn masks(core: &Arc<Core>, ids: &[i64], s: &MaskSettings, provider: &str, jo
         if job.cancelled() {
             break;
         }
-        job.progress(if s.method == "ai" { "Selecting with AI" } else { "Selecting" }, k, n);
+        job.progress(match s.method.as_str() { "ai" => "Selecting with AI", "sam" => "Selecting with Segment Anything", _ => "Selecting" }, k, n);
         let res = (|| -> Result<Value, String> {
             let small = Rgb::from_working(&*core.proxy(&p.path)?, 512);
-            let mut found: Vec<(String, &str, Vec<[f32; 2]>, bool)> = vec![];
+            // per selection: its name, target, outline parts (true: a hole in them) and whether it is the inverse
+            let mut found: Vec<(String, &str, Vec<(bool, Vec<[f32; 2]>)>, bool)> = vec![];
             let mut missed: Vec<String> = vec![];
+            let one = |pts: Vec<[f32; 2]>| vec![(false, pts)];
+            // SAM 3, run on the full frame as edited; its encoding is kept for the next target
+            let sam = (s.method == "sam")
+                .then(|| crate::segment::pick(&core.dir(), "concept", &core.settings.lock().unwrap().ai_concept_model))
+                .flatten();
+            if s.method == "sam" && sam.is_none() {
+                return Err("download a SAM 3 model in the AI tab for Segment Anything masks".into());
+            }
+            let frame = sam.as_ref().map(|_| core.render(p.id, &crate::develop::Opts { full_frame: true, ..Default::default() })).transpose()?;
             for t in &s.targets {
                 let before = found.len();
                 let title = |t: &str| t[..1].to_uppercase() + &t[1..];
                 match (s.method.as_str(), t.as_str()) {
                     ("ai", "people") => {
                         for (i, (_, pts)) in ai::outline(core, p.id, "each person", provider)?.into_iter().enumerate() {
-                            found.push((format!("Person {}", i + 1), "people", pts, false));
+                            found.push((format!("Person {}", i + 1), "people", one(pts), false));
                         }
                     }
                     ("ai", t @ ("subject" | "sky" | "background")) => {
                         let what = if t == "sky" { "the sky" } else { "the main subject" };
                         if let Some((_, pts)) = ai::outline(core, p.id, what, provider)?.into_iter().next() {
-                            found.push((title(t), t, pts, t == "background"));
+                            found.push((title(t), t, one(pts), t == "background"));
                         }
                     }
-                    (_, "sky") => found.extend(vision::sky_outline(&small).map(|pts| ("Sky".into(), "sky", pts, false))),
-                    (_, t @ ("subject" | "background")) => found.extend(vision::subject_outline(&small).map(|pts| (title(t), t, pts, t == "background"))),
-                    (_, "people") => missed.push("people (needs the AI method)".into()),
+                    ("sam", t @ ("subject" | "sky" | "background" | "people")) => {
+                        let (Some(model), Some(img)) = (&sam, &frame) else { continue };
+                        let key = format!("{}:{}x{}", p.id, img.w, img.h);
+                        for (name, polys) in crate::segment::target(&core.dir(), model, img, &key, t)? {
+                            found.push((name, t, polys, t == "background"));
+                        }
+                    }
+                    (_, "sky") => found.extend(vision::sky_outline(&small).map(|pts| ("Sky".into(), "sky", one(pts), false))),
+                    (_, t @ ("subject" | "background")) => found.extend(vision::subject_outline(&small).map(|pts| (title(t), t, one(pts), t == "background"))),
+                    (_, "people") => missed.push("people (needs the AI or Segment Anything method)".into()),
                     (_, t) => missed.push(format!("{t} (unknown target)")),
                 }
                 if found.len() == before && !missed.iter().any(|m| m.starts_with(t.as_str())) {
@@ -1270,9 +1307,13 @@ pub fn masks(core: &Arc<Core>, ids: &[i64], s: &MaskSettings, provider: &str, jo
             // read after the AI calls, so edits made meanwhile stay
             let mut d = core.develop(p.id)?;
             let mut made = vec![];
-            for (name, target, points, invert) in found {
-                let c = MaskComponent { op: "add".into(), kind: "polygon".into(), name: target.into(), invert, feather: s.feather, edge_shift: s.edge_shift, points, ..Default::default() };
-                let mut m = Mask { mask_id: format!("mask_auto_{}", &crate::new_token()[..8]), name: name.clone(), components: vec![c], adjustments: preset(target, s.adjust), ..Default::default() };
+            for (name, target, parts, invert) in found {
+                // the background: everything but the subject, as one inverse selection (holes and all)
+                let components = parts
+                    .into_iter()
+                    .map(|(hole, points)| MaskComponent { op: if hole { "subtract" } else { "add" }.into(), kind: "polygon".into(), name: target.into(), feather: s.feather, edge_shift: s.edge_shift, points, ..Default::default() })
+                    .collect();
+                let mut m = Mask { mask_id: format!("mask_auto_{}", &crate::new_token()[..8]), name: name.clone(), invert, components, adjustments: preset(target, s.adjust), ..Default::default() };
                 match d.masks.iter_mut().find(|x| x.name == name).filter(|_| s.replace) {
                     Some(x) => {
                         m.mask_id = x.mask_id.clone();
@@ -1407,7 +1448,9 @@ pub fn enhance(core: &Arc<Core>, ids: &[i64], s: &EnhanceSettings, job: &Job) ->
                 };
                 let img = if s.denoise {
                     let vram = aimodel::hardware().vram_mb;
-                    aimodel::denoise(&core.dir(), &s.ai_model, img, s.ai_strength, vram, &|done, total| {
+                    // a RAW is denoised in its camera's own RGB, before the colour matrix mixes the channels' noise
+                    let space = develop::is_raw(&file).then(|| fs::read(&file).ok().and_then(|b| crate::libraw::camera_space(&b))).flatten();
+                    aimodel::denoise_in(&core.dir(), &s.ai_model, img, s.ai_strength, vram, space, &|done, total| {
                         job.progress("AI denoising", done, total);
                         !job.cancelled()
                     })?
@@ -1645,7 +1688,7 @@ mod tests {
         assert!(sharp.flag != -1 && sharp.rating >= 3, "sharp photo: {sharp:?} {r}");
         assert_eq!(soft.flag, -1, "blurred photo not rejected: {r}");
         assert!(sharp.keywords.contains("horizontal") && soft.keywords.contains("blurry"), "{} / {}", sharp.keywords, soft.keywords);
-        assert!(catalog::analysis(&core.db(), &sharp.path, &stamp(&sharp, "full")).is_some(), "measurements are cached");
+        assert!(catalog::analysis(&core.db(), &sharp.path, &format!("{}/l{}", stamp(&sharp, "full", 0), crate::aimodel::model_file(&core.dir(), "face-landmarks-2dfan4", crate::faceswap::LANDMARKS).is_some() as u8)).is_some(), "measurements are cached");
 
         let r = run(&core, "blur", &ids, &json!({ "detail": "full", "action": "label" }), &job).unwrap();
         assert_eq!(r["found"], 2, "{r}");

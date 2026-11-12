@@ -95,41 +95,6 @@ fn libraw() {
         .flag_if_supported("-pthread")
         .warnings(false);
 
-    // Detect libjpeg-turbo (SIMD lossless DCT transform API) if installed locally
-    let turbo_candidates = [
-        std::env::var("TURBOJPEG_ROOT").ok().map(PathBuf::from),
-        Some(PathBuf::from("/opt/homebrew/opt/jpeg-turbo")),
-        Some(PathBuf::from("/usr/local/opt/jpeg-turbo")),
-        Some(PathBuf::from("/usr")),
-        Some(PathBuf::from("/usr/local")),
-    ];
-    'outer: for cand in turbo_candidates.into_iter().flatten() {
-        let inc = cand.join("include");
-        let lib_dirs = [
-            cand.join("lib"),
-            cand.join("lib/x86_64-linux-gnu"),
-            cand.join("lib/aarch64-linux-gnu"),
-            cand.join("lib64"),
-        ];
-        if inc.join("turbojpeg.h").exists() {
-            for lib in lib_dirs {
-                if lib.join("libturbojpeg.a").exists() {
-                    build.include(&inc);
-                    build.define("OL_HAVE_TURBOJPEG", "1");
-                    println!("cargo:rustc-link-search=native={}", lib.display());
-                    println!("cargo:rustc-link-lib=static=turbojpeg");
-                    break 'outer;
-                } else if lib.join("libturbojpeg.so").exists() {
-                    build.include(&inc);
-                    build.define("OL_HAVE_TURBOJPEG", "1");
-                    println!("cargo:rustc-link-search=native={}", lib.display());
-                    println!("cargo:rustc-link-lib=turbojpeg");
-                    break 'outer;
-                }
-            }
-        }
-    }
-
     build.files(files).compile("olraw");
     println!("cargo:rerun-if-changed=csrc");
     println!("cargo:rerun-if-changed=vendor/libraw");

@@ -149,9 +149,10 @@ export const FUNCS: { id: AutoFunction; title: string; short: string; icon: stri
         basic: true,
         options: [
           ["builtin", "Built-in estimate (fast, no AI model)"],
+          ["sam", "Segment Anything 3, on this computer"],
           ["ai", "AI provider traces the outlines"],
         ],
-        hint: "People need the AI provider. Both snap the outline to the photo's edges.",
+        hint: "People need Segment Anything or the AI provider. Segment Anything needs a SAM 3 model (AI tab) and keeps holes (a tree in the sky). All snap the outline to the photo's edges.",
       },
       { kind: "heading", label: "Selections" },
       { kind: "slider", k: "adjust", label: "Starting adjustment", min: 0, max: 100, unit: "%", hint: "Subject brighter, sky deeper, background darker; 0 only selects" },

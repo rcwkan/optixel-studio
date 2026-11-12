@@ -42,6 +42,8 @@ pub struct Develop {
     pub detail: Detail,
     pub effects: Effects,
     pub grain: Grain,
+    /// A creative 3D LUT look, last.
+    pub look: Look,
     pub lens: Lens,
     pub transform: Transform,
     /// Pro: Photoshop adjustments on top of the developed photo.
@@ -103,6 +105,22 @@ pub struct AiDenoise {
     pub enabled: bool,
     pub model: String,
     pub strength: f32, // 0.0 .. 100.0
+}
+
+/// A creative look from a .cube 3D LUT in the LUT folder (`lut_import`), applied last, on the display
+/// (sRGB) values the LUT was made for.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Look {
+    /// file name in the LUT folder; empty: none
+    pub lut: String,
+    /// 0-100
+    pub amount: f32,
+}
+impl Default for Look {
+    fn default() -> Self {
+        Self { lut: String::new(), amount: 100.0 }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -594,6 +612,8 @@ pub struct Mask {
     pub mask_id: String,
     pub name: String,
     pub enabled: bool,
+    /// Inverse of the whole selection (its components combined): everything but the object.
+    pub invert: bool,
     pub components: Vec<MaskComponent>,
     pub adjustments: LocalAdjust,
     /// Full develop settings applied on top of the finished photo inside this mask only (the
@@ -608,6 +628,7 @@ impl Default for Mask {
             mask_id: String::new(),
             name: String::new(),
             enabled: true,
+            invert: false,
             components: vec![],
             adjustments: LocalAdjust::default(),
             tuning: None,
@@ -1247,7 +1268,7 @@ fn decode_tagged(path: &Path) -> Result<(DynamicImage, Option<Vec<u8>>), String>
         if let Ok((w, h, rgb, icc)) = crate::libraw::decode_heif(&bytes, None)
             && let Some(buf) = ImageBuffer::from_raw(w, h, rgb)
         {
-            return Ok((DynamicImage::ImageRgb8(buf), icc));
+            return Ok((DynamicImage::ImageRgb16(buf), icc));
         }
     }
     let mut dec =
@@ -1264,8 +1285,14 @@ fn decode_tagged(path: &Path) -> Result<(DynamicImage, Option<Vec<u8>>), String>
 /// ponytail: only an embedded profile counts; a camera JPEG marked Adobe RGB by EXIF alone reads as sRGB.
 pub fn decode_std(path: &Path) -> Result<DynamicImage, String> {
     let (mut img, icc) = decode_tagged(path)?;
-    if let (Some(icc), DynamicImage::ImageRgb8(buf)) = (icc, &mut img) {
-        let _ = crate::icc::to_srgb8(&icc, buf);
+    if let Some(icc) = icc {
+        // a 16-bit HEIC / AVIF: 8 bits are plenty for what this is for
+        if let DynamicImage::ImageRgb16(_) = img {
+            img = DynamicImage::ImageRgb8(img.to_rgb8());
+        }
+        if let DynamicImage::ImageRgb8(buf) = &mut img {
+            let _ = crate::icc::to_srgb8(&icc, buf);
+        }
     }
     Ok(img)
 }
@@ -1626,14 +1653,18 @@ fn tones_impl(src: &[Px], w: usize, h: usize, d: &Develop, overlay: Option<usize
     let no_detail = d.detail.luminance_noise_reduction <= 0.0 && d.detail.color_noise_reduction <= 0.0 && d.detail.sharpening <= 0.0 && d.filters.blur <= 0.0 && !d.hdr.enabled; // HDR toning runs between detail and Pro, on the CPU
     let mut pro_gpu = false;
     // ponytail: light edits (tone/curves only) are faster on the CPU than the transfer to the GPU
-    let heavy = color.active || (pro.active && no_detail);
+    let look = look_lut(&d.look);
+    let look_amount = (d.look.amount / 100.0).clamp(0.0, 1.0);
+    // the GPU stack ends the stages when nothing (detail, HDR, blur, Pro on the CPU) comes after it
+    let look_gpu = look.as_ref().filter(|_| no_detail).map(|l| (&**l, look_amount));
+    let heavy = color.active || (pro.active && no_detail) || look_gpu.is_some();
     let on_gpu = if allow_gpu && simple && heavy {
         color.gpu_params().and_then(|cp| {
             pro_gpu = pro.active && no_detail;
             let mut params = cp;
             params.extend(if pro_gpu { pro.gpu_params() } else { vec![0.0; crate::gpu::PRO_LEN] });
             let t = (!tone.is_identity()).then(|| crate::gpu::ToneP { a_sh: tone.a_sh, a_hi: tone.a_hi, bp: tone.bp, wp: tone.wp, k: tone.k });
-            crate::gpu::run(src, &crate::gpu::Stack { gain: g, tone: t, curves: curves.as_ref().map(|c| &c.lut), params, levels: pro.levels.as_ref() })
+            crate::gpu::run(src, &crate::gpu::Stack { gain: g, tone: t, curves: curves.as_ref().map(|c| &c.lut), params, levels: pro.levels.as_ref(), look: look_gpu })
         })
     } else {
         None
@@ -1743,6 +1774,12 @@ fn tones_impl(src: &[Px], w: usize, h: usize, d: &Develop, overlay: Option<usize
     if pro.active && !pro_gpu {
         px.par_iter_mut().for_each(|p| *p = pro.apply(*p));
     }
+    // 7c. the look, last (unless the GPU stack already ran it)
+    if let Some(l) = &look
+        && !(gpu_done && look_gpu.is_some())
+    {
+        px.par_iter_mut().for_each(|p| *p = apply_look(*p, l, look_amount));
+    }
     (px, wts)
 }
 
@@ -1805,8 +1842,136 @@ impl Tone {
 }
 
 /// Separable 3-pass box blur ≈ Gaussian.
+/// A 3D LUT: `size`³ entries of display (sRGB-encoded) RGB, red fastest, for inputs in 0-1.
+#[derive(Debug)]
+pub struct Lut3d {
+    pub size: usize,
+    pub rgb: Vec<f32>,
+}
+
+impl Lut3d {
+    /// A .cube file: `LUT_3D_SIZE n`, then n³ rows of "r g b" (red fastest). Only the 0-1 input domain.
+    pub fn parse(text: &str) -> Result<Lut3d, String> {
+        let (mut size, mut rgb) = (0usize, Vec::new());
+        for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            let mut f = line.split_whitespace();
+            match f.next().unwrap_or("") {
+                "LUT_3D_SIZE" => size = f.next().and_then(|v| v.parse().ok()).filter(|n| (2..=256).contains(n)).ok_or("bad LUT_3D_SIZE")?,
+                "LUT_1D_SIZE" => return Err("a 1D LUT: only 3D .cube looks are supported".into()),
+                "DOMAIN_MIN" if f.any(|v| v.parse::<f32>() != Ok(0.0)) => return Err("only LUTs for 0-1 input are supported".into()),
+                "DOMAIN_MAX" if f.any(|v| v.parse::<f32>() != Ok(1.0)) => return Err("only LUTs for 0-1 input are supported".into()),
+                v if v.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '.') => {
+                    for n in std::iter::once(v).chain(f) {
+                        rgb.push(n.parse::<f32>().map_err(|_| format!("bad LUT entry: {line}"))?);
+                    }
+                }
+                _ => {} // TITLE and other keywords
+            }
+        }
+        if size == 0 || rgb.len() != size * size * size * 3 {
+            return Err(format!("expected {} entries for LUT_3D_SIZE {size}, found {}", size * size * size, rgb.len() / 3));
+        }
+        Ok(Lut3d { size, rgb })
+    }
+
+    /// Trilinear lookup of display RGB (0-1), as `shaders/lut3d.wgsl` does it.
+    pub fn sample(&self, e: Px) -> Px {
+        let n = self.size;
+        let pos = e.map(|v| v.clamp(0.0, 1.0) * (n - 1) as f32);
+        let i0 = pos.map(|p| (p.floor() as usize).min(n - 1));
+        let i1 = i0.map(|i| (i + 1).min(n - 1));
+        let t = [pos[0] - i0[0] as f32, pos[1] - i0[1] as f32, pos[2] - i0[2] as f32];
+        let at = |r: usize, g: usize, b: usize| {
+            let k = ((b * n + g) * n + r) * 3;
+            [self.rgb[k], self.rgb[k + 1], self.rgb[k + 2]]
+        };
+        let c0 = lerp(lerp(at(i0[0], i0[1], i0[2]), at(i1[0], i0[1], i0[2]), t[0]), lerp(at(i0[0], i1[1], i0[2]), at(i1[0], i1[1], i0[2]), t[0]), t[1]);
+        let c1 = lerp(lerp(at(i0[0], i0[1], i1[2]), at(i1[0], i0[1], i1[2]), t[0]), lerp(at(i0[0], i1[1], i1[2]), at(i1[0], i1[1], i1[2]), t[0]), t[1]);
+        lerp(c0, c1, t[2])
+    }
+}
+
+/// A working-space pixel through the look: to sRGB display values, the LUT, back, `amount` (0-1) of it.
+pub fn apply_look(p: Px, lut: &Lut3d, amount: f32) -> Px {
+    let e = mul(&M2020_709, p).map(|v| srgb_oetf(v.clamp(0.0, 1.0)));
+    let back = mul(&M709_2020, lut.sample(e).map(srgb_eotf));
+    lerp(p, back, amount)
+}
+
+/// The LUT folder (`<data>/luts`), set by the core when the storage opens or moves.
+static LUT_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+pub fn set_lut_dir(dir: PathBuf) {
+    *LUT_DIR.write().unwrap() = Some(dir);
+}
+
+pub fn lut_dir() -> Option<PathBuf> {
+    LUT_DIR.read().unwrap().clone()
+}
+
+/// The look's LUT, parsed once per file version. ponytail: the last one only; a map if looks alternate.
+fn look_lut(l: &Look) -> Option<std::sync::Arc<Lut3d>> {
+    if l.lut.is_empty() || l.amount <= 0.0 {
+        return None;
+    }
+    // a name in the folder, never a path out of it
+    let path = lut_dir()?.join(Path::new(&l.lut).file_name()?);
+    let stamp = fs::metadata(&path).ok()?.modified().ok()?;
+    static LAST: std::sync::Mutex<Option<(PathBuf, std::time::SystemTime, std::sync::Arc<Lut3d>)>> = std::sync::Mutex::new(None);
+    let mut last = LAST.lock().ok()?;
+    if let Some((p, t, lut)) = last.as_ref()
+        && *p == path
+        && *t == stamp
+    {
+        return Some(lut.clone());
+    }
+    let lut = std::sync::Arc::new(Lut3d::parse(&fs::read_to_string(&path).ok()?).ok()?);
+    *last = Some((path, stamp, lut.clone()));
+    Some(lut)
+}
+
+/// Pixels from which a stage may run on the GPU: below, the upload and readback always cost more than the
+/// CPU takes (measured on an M4 Max: blur and chromatic aberration lose at every size up to 6 MP).
+const GPU_MIN_PX: usize = 6_000_000;
+
+/// Which side runs a stage on this machine: 0 not measured yet, 1 the GPU, 2 the CPU.
+static BLUR_ON: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static CA_ON: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// `gpu` or `cpu` for a stage, whichever this machine does faster. Whether a GPU kernel wins depends on the
+/// GPU, the CPU and the bus between them (an M4 Max's CPU beats its GPU once the frame has to cross over;
+/// a desktop with a big card and fewer cores goes the other way), so the first big frame times both (the
+/// GPU warmed up first) and the faster is kept. ponytail: one sample decides; re-measure if a busy GPU skews it.
+fn fastest<T>(on: &std::sync::atomic::AtomicU8, gpu: impl Fn() -> Option<T>, cpu: impl FnOnce() -> T) -> T {
+    use std::sync::atomic::Ordering::Relaxed;
+    match on.load(Relaxed) {
+        1 => gpu().unwrap_or_else(cpu),
+        2 => cpu(),
+        _ => {
+            if gpu().is_none() {
+                return cpu(); // no GPU (or switched off): nothing to measure
+            }
+            let t = std::time::Instant::now();
+            let g = gpu();
+            let tg = t.elapsed();
+            let t = std::time::Instant::now();
+            let c = cpu();
+            on.store(if g.is_some() && tg < t.elapsed() { 1 } else { 2 }, Relaxed);
+            c
+        }
+    }
+}
+
 pub fn blur(src: &[f32], w: usize, h: usize, sigma: f32) -> Vec<f32> {
     let r = ((sigma * 0.9).round() as usize).max(1);
+    if w * h < GPU_MIN_PX {
+        return box_blur_cpu(src, w, h, r);
+    }
+    fastest(&BLUR_ON, || crate::gpu::box_blur(src, w, h, r), || box_blur_cpu(src, w, h, r))
+}
+
+/// Three box passes of radius `r` along the rows, then three down the columns: about a Gaussian.
+pub(crate) fn box_blur_cpu(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
     let mut a = src.to_vec();
     for _ in 0..3 {
         a = box_rows(&a, w, r);
@@ -2097,8 +2262,10 @@ fn dehaze(px: &mut [Px], w: usize, h: usize, amount: f32) {
     let dc: Vec<f32> = px.par_iter().map(|p| p[0].min(p[1]).min(p[2]).max(0.0)).collect();
     let dcb = blur(&dc, w, h, w.max(h) as f32 * 0.02);
     let mut idx: Vec<usize> = (0..dcb.len()).step_by(7).collect();
-    idx.sort_by(|a, b| dcb[*b].total_cmp(&dcb[*a]));
-    let top = &idx[..(idx.len() / 200).max(1)];
+    let k = (idx.len() / 200).max(1);
+    // the k haziest (in any order): a selection, linear, where a sort took most of the stage's time
+    idx.select_nth_unstable_by(k - 1, |a, b| dcb[*b].total_cmp(&dcb[*a]));
+    let top = &idx[..k];
     let mut a = [0.0f32; 3];
     for &i in top {
         for c in 0..3 {
@@ -2509,13 +2676,14 @@ fn mask_weights(m: &Mask, w: usize, h: usize, px: &[Px]) -> Vec<f32> {
                     (Some(a), _) => a.max(v),
                 });
             }
-            acc.unwrap_or(0.0)
+            let a = acc.unwrap_or(0.0);
+            if m.invert { 1.0 - a } else { a }
         })
         .collect()
 }
 
 fn is_poly_object(m: &Mask) -> bool {
-    m.components.first().is_some_and(|c| c.kind == "polygon" && c.op != "subtract" && !c.invert)
+    !m.invert && m.components.first().is_some_and(|c| c.kind == "polygon" && c.op != "subtract" && !c.invert)
 }
 
 fn apply_masks(px: &mut [Px], w: usize, h: usize, masks: &[Mask], overlay: Option<usize>) -> Vec<Option<Vec<f32>>> {
@@ -3116,6 +3284,22 @@ fn luma_nr(px: &mut [Px], w: usize, h: usize, d: &Detail) {
     });
 }
 
+/// Red and blue rescaled about the centre by `s[0]` and `s[2]`, in linear sRGB (the channels a lens's
+/// fringes are in; Rec.2020 would mix them).
+pub(crate) fn lateral_ca_cpu(px: &[Px], w: usize, h: usize, s: [f32; 3]) -> Vec<Px> {
+    let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
+    let src = Img { w, h, px: px.par_iter().map(|p| mul(&M2020_709, *p)).collect() };
+    let (mx, my) = ((w - 1) as f32, (h - 1) as f32);
+    (0..w * h)
+        .into_par_iter()
+        .map(|i| {
+            let (x, y) = ((i % w) as f32 + 0.5 - cx, (i / w) as f32 + 0.5 - cy);
+            let at = |c: usize| sample(&src, (cx + x * s[c] - 0.5).clamp(0.0, mx), (cy + y * s[c] - 0.5).clamp(0.0, my))[c];
+            mul(&M709_2020, [at(0), src.px[i][1], at(2)])
+        })
+        .collect()
+}
+
 /// Lens corrections on the full frame: lateral chromatic aberration (red and blue rescaled about the
 /// centre), lens vignetting, then defringe (purple / green fringes along high-contrast edges go grey).
 fn lens(px: &mut Vec<Px>, w: usize, h: usize, l: &Lens) {
@@ -3124,16 +3308,11 @@ fn lens(px: &mut Vec<Px>, w: usize, h: usize, l: &Lens) {
     if l.ca_red_cyan != 0.0 || l.ca_blue_yellow != 0.0 {
         // in linear sRGB: the channels a JPEG's fringes are in (Rec.2020 would mix them)
         let s = [l.ca_red_cyan, 0.0, l.ca_blue_yellow].map(|v| 1.0 + v / 100.0 * CA_MAX);
-        let src = Img { w, h, px: px.par_iter().map(|p| mul(&M2020_709, *p)).collect() };
-        let (mx, my) = ((w - 1) as f32, (h - 1) as f32);
-        *px = (0..w * h)
-            .into_par_iter()
-            .map(|i| {
-                let (x, y) = ((i % w) as f32 + 0.5 - cx, (i / w) as f32 + 0.5 - cy);
-                let at = |c: usize| sample(&src, (cx + x * s[c] - 0.5).clamp(0.0, mx), (cy + y * s[c] - 0.5).clamp(0.0, my))[c];
-                mul(&M709_2020, [at(0), src.px[i][1], at(2)])
-            })
-            .collect();
+        *px = if w * h < GPU_MIN_PX {
+            lateral_ca_cpu(px, w, h, s)
+        } else {
+            fastest(&CA_ON, || crate::gpu::lateral_ca(px, w, h, s[0], s[2]), || lateral_ca_cpu(px, w, h, s))
+        };
     }
     if l.vignetting != 0.0 {
         let (v, e) = (l.vignetting / 100.0 * 1.5, 1.0 + l.vignetting_midpoint / 25.0);
@@ -5137,6 +5316,21 @@ mod tests {
         assert!(same(run(&d).px[0], src.px[src.w - 1]));
     }
 
+    /// Inverting a selection selects everything else: each pixel's weight becomes one minus it, whatever its
+    /// components (here a disc minus a gradient).
+    #[test]
+    fn inverted_selection_is_the_complement() {
+        let (w, h) = (16, 12);
+        let px = vec![[0.3f32; 3]; w * h];
+        let disc = MaskComponent { kind: "radial_gradient".into(), center: [0.5, 0.5], radius: [0.3, 0.3], ..Default::default() };
+        let ramp = MaskComponent { op: "subtract".into(), kind: "linear_gradient".into(), start: [0.0, 0.0], end: [1.0, 0.0], ..Default::default() };
+        let m = Mask { components: vec![disc, ramp], ..Default::default() };
+        let a = mask_weights(&m, w, h, &px);
+        let b = mask_weights(&Mask { invert: true, ..m }, w, h, &px);
+        assert!(a.iter().zip(&b).all(|(x, y)| (x + y - 1.0).abs() < 1e-6));
+        assert!(a.iter().any(|&v| v > 0.2) && b.iter().any(|&v| v > 0.9));
+    }
+
     #[test]
     fn ai_selected_objects_are_separate_masks() {
         let mut tuned = Develop::default();
@@ -5341,7 +5535,13 @@ mod gpu_tests {
             ("invert+posterize", json!({"filters": {"invert": true, "posterize": 6}})),
             ("threshold", json!({"filters": {"threshold": 120}})),
             ("pro after sharpen", json!({"detail": {"sharpening": 40}, "filters": {"invert": true}, "presence": {"saturation": 10}})),
+            ("look", json!({"look": {"lut": "warm.cube", "amount": 80}})),
+            ("look+color", json!({"look": {"lut": "warm.cube", "amount": 100}, "presence": {"saturation": 20}, "basic_tone": {"contrast": 15}})),
         ];
+        let dir = std::env::temp_dir().join(format!("optixel-looks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("warm.cube"), cube(9, &|r, g, b| [r.powf(0.9), g, b * 0.9 + 0.05])).unwrap();
+        set_lut_dir(dir.clone());
         for (name, v) in cases {
             let d: Develop = serde_json::from_value(v).unwrap();
             let t0 = std::time::Instant::now();
@@ -5356,6 +5556,40 @@ mod gpu_tests {
             // hard thresholds (posterize / threshold) may flip a few pixels sitting on an edge
             assert!(frac < 0.002, "{name}: {:.3}% of pixels differ", frac * 100.0);
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A .cube file of `n`³ entries from `f` (red fastest).
+    fn cube(n: usize, f: &dyn Fn(f32, f32, f32) -> [f32; 3]) -> String {
+        let mut t = format!("TITLE \"test\"\nLUT_3D_SIZE {n}\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n");
+        let k = (n - 1) as f32;
+        for b in 0..n {
+            for g in 0..n {
+                for r in 0..n {
+                    let v = f(r as f32 / k, g as f32 / k, b as f32 / k);
+                    t += &format!("{} {} {}\n", v[0], v[1], v[2]);
+                }
+            }
+        }
+        t
+    }
+
+    /// A .cube look: an identity LUT changes nothing, an inverting one inverts the display values, half the
+    /// amount is half way, and what is not a 0-1 3D LUT is refused.
+    #[test]
+    fn cube_looks() {
+        let close = |a: Px, b: Px, tol: f32| (0..3).all(|c| (a[c] - b[c]).abs() < tol);
+        let id = Lut3d::parse(&cube(5, &|r, g, b| [r, g, b])).unwrap();
+        let p = srgb_to_working([0.3, 0.5, 0.7]);
+        assert!(close(apply_look(p, &id, 1.0), p, 1e-4), "{:?}", apply_look(p, &id, 1.0));
+        let inv = Lut3d::parse(&cube(5, &|r, g, b| [1.0 - r, 1.0 - g, 1.0 - b])).unwrap();
+        let q = apply_look(srgb_to_working([0.25, 0.5, 0.75]), &inv, 1.0);
+        assert!(close(mul(&M2020_709, q).map(srgb_oetf), [0.75, 0.5, 0.25], 1e-3), "{q:?}");
+        let half = apply_look(p, &inv, 0.5);
+        assert!(close(half, lerp(p, apply_look(p, &inv, 1.0), 0.5), 1e-6));
+        assert!(Lut3d::parse("LUT_1D_SIZE 4").is_err());
+        assert!(Lut3d::parse("LUT_3D_SIZE 2\n0 0 0\n").is_err());
+        assert!(Lut3d::parse(&cube(2, &|r, g, b| [r, g, b]).replace("DOMAIN_MAX 1 1 1", "DOMAIN_MAX 2 2 2")).is_err());
     }
 }
 
@@ -5374,3 +5608,4 @@ mod raw_size_tests {
         assert!(w * h > 4_000_000, "still preview-sized");
     }
 }
+

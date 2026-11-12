@@ -1,5 +1,4 @@
 import { ReactNode, useState } from "react";
-import { Develop as Dev } from "./api";
 import { Btn, Panel, Slider } from "./controls";
 
 /** The 15 professional photographic color grading styles (from 15_photo_styles_color_grading_engine.rs) */
@@ -166,41 +165,5 @@ export function AutoTab(
         </div>
       </Panel>
     </>
-  );
-}
-
-/** ✦ AI selections in one click, and healing away a selected object; shown above the selections list. */
-export function AiSelectPanel(
-  p: Ask & {
-    dev: Dev;
-    /** heal away the objects of selection `mask` */
-    remove: (mask: number) => Promise<void>;
-  },
-) {
-  const { run, ai } = useRunners(p);
-  const objects = p.dev.masks.flatMap((m, i) => (m.components.some((c) => c.type === "polygon" && c.op === "add") ? [{ m, i }] : []));
-  return (
-    <Panel title="Quick select & remove">
-      <div className="grid grid-cols-3 gap-1">
-        {ai("Subject", "Select the main subject.", "A selection of the main subject")}
-        {ai("Sky", "Select the sky.", "A selection of the sky")}
-        {ai("Remove people", "Remove the people.", "Heal away every person")}
-      </div>
-      <div className={sub}>Remove a selected object</div>
-      {objects.length ? (
-        <div className="space-y-1">
-          {objects.map(({ m, i }) => (
-            <div key={m.mask_id || i} className="flex items-center gap-2 rounded border border-neutral-800 px-2 py-1 text-[11px]">
-              <span className="min-w-0 flex-1 truncate" title={m.name}>
-                {m.name}
-              </span>
-              {run(`remove${i}`, "Remove", () => p.remove(i), `Heal ${m.name} away from a matching nearby area`)}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className={hint}>Click an object with ✦ Select (S), or use ✦ Subject, then remove it here.</p>
-      )}
-    </Panel>
   );
 }

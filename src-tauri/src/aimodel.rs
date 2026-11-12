@@ -193,6 +193,103 @@ const MODELS: &[Spec] = &[
         unzip: false,
     },
     Spec {
+        id: "face-landmarks-2dfan4",
+        kind: "landmarks",
+        name: "2DFAN4 · Eye landmarks (closed eyes)",
+        blurb: "68 landmarks per face found by the face scan: the eyelids' opening tells open eyes from a blink. Used by culling (reject closed eyes) and the focus panel. Needs YOLOFace + ArcFace too.",
+        license: "FaceFusion models / FAN, Bulat & Tzimiropoulos (research use; check FaceFusion's terms before commercial use)",
+        repo: "facefusion/models-3.0.0",
+        files: &[("2dfan4.onnx", 97_904_803, "678c6fa539d52335a31c980feefdf4a6e02d781d83dce00af8a894f114557285")],
+        min_vram_mb: 0,
+        rank: 10,
+        multiple: 1,
+        dims: None,
+        gpu: false,
+        unzip: false,
+    },
+    Spec {
+        id: "sam2.1-hiera-tiny",
+        kind: "segment",
+        name: "SAM 2.1 Hiera-Tiny · Click to select",
+        blurb: "Meta's Segment Anything 2.1, smallest: click an object and it is selected, edges and all (Alt-click takes a part away). Fast enough to follow every click.",
+        license: "Apache-2.0 (SAM 2.1, Meta; ONNX by onnx-community)",
+        repo: "onnx-community/sam2.1-hiera-tiny-ONNX",
+        files: &[
+            ("onnx/vision_encoder.onnx", 354_238, "4f30aacd3aaefbca81a0b7fe4c1fc96345570ea0a6f80ced599493d1b3be2e8c"),
+            ("onnx/vision_encoder.onnx_data", 134_084_864, "e83df9866a5afe68ea7f0f721f18f65137fc3acbf0da1c74e946d363e09c69cc"),
+            ("onnx/prompt_encoder_mask_decoder.onnx", 213_114, "874414704c5d686db7d206a35f6e15d26563d50c8c4468fccc6739bd7e491dcf"),
+            ("onnx/prompt_encoder_mask_decoder.onnx_data", 20_958_208, "e9874d900dd4134ed60eab1e97910327c2419e0b2954485d8fd6e7f1a1470f47"),
+        ],
+        min_vram_mb: 0,
+        rank: 10,
+        multiple: 1,
+        dims: None,
+        gpu: true,
+        unzip: false,
+    },
+    Spec {
+        id: "sam2.1-hiera-small",
+        kind: "segment",
+        name: "SAM 2.1 Hiera-Small · Click to select",
+        blurb: "The same click selection with a larger image encoder: cleaner edges on fine detail (hair, branches), a little slower per photo.",
+        license: "Apache-2.0 (SAM 2.1, Meta; ONNX by onnx-community)",
+        repo: "onnx-community/sam2.1-hiera-small-ONNX",
+        files: &[
+            ("onnx/vision_encoder.onnx", 467_440, "aacf1f7137bb6fffcf6bf166abcfabe28f57a76059254f3fb611c4a64a208119"),
+            ("onnx/vision_encoder.onnx_data", 162_476_288, "260fd1f0a34e72a3dc79a739e563b4facc0ba75504818b433a1f808e66637456"),
+            ("onnx/prompt_encoder_mask_decoder.onnx", 213_114, "079c59b261f723ff5c6a125e69b0170a957b21c58738c28d2b0394ecd0587d7f"),
+            ("onnx/prompt_encoder_mask_decoder.onnx_data", 20_958_208, "f9e59a584ab8ced21fa812c211bc01084204db1c9e92a5ef4fb3a49972b4e864"),
+        ],
+        min_vram_mb: 1000,
+        rank: 20,
+        multiple: 1,
+        dims: None,
+        gpu: true,
+        unzip: false,
+    },
+    Spec {
+        id: "sam3-fp16",
+        kind: "concept",
+        name: "SAM 3 · Select by name (full, FP16)",
+        blurb: "Meta's Segment Anything 3: type what to select (\"sky\", \"person\", \"red car\") and it finds every instance; also what Auto masks use for subject, sky, people and background. The most reliable on vague words.",
+        license: "SAM License (SAM 3, Meta; ONNX export by PIXL): read its terms, trade controls included",
+        repo: "xuckless/pixl-sam3-onnx",
+        files: &[
+            ("sam3_image_encoder_fp16.onnx", 908_717_454, "709e68c56ba6c1e40c0cfa3381b06b29fc358b1281c706e02c1ff45d71dead8c"),
+            ("sam3_text_encoder_fp16.onnx", 706_988_044, "2145c1a55137ea64076b441b48a79feaeebdcc6932154c9f702e54702a96eab9"),
+            ("sam3_decoder.onnx", 129_868_227, "f6749e7b7a558ab3b16b0ba75075ebe7086003d86d129f8fa831dea727f01a28"),
+            ("@openai/clip-vit-base-patch32/vocab.json", 862_328, ""),
+            ("@openai/clip-vit-base-patch32/merges.txt", 524_657, ""),
+        ],
+        min_vram_mb: 4000,
+        rank: 30,
+        multiple: 1,
+        dims: None,
+        gpu: false,
+        unzip: false,
+    },
+    Spec {
+        id: "sam3-tiny",
+        kind: "concept",
+        name: "SAM 3 Tiny (EfficientSAM3) · Select by name",
+        blurb: "SAM 3 distilled into a small EfficientViT encoder: the same select-by-name and Auto masks in a fifth of the size. Sure of clear nouns; can be confidently wrong on vague phrases where SAM 3 finds nothing.",
+        license: "SAM License (distilled from SAM 3, Meta; EfficientSAM3, Zeng et al.; ONNX export by PIXL)",
+        repo: "xuckless/pixl-efficientsam3-onnx",
+        files: &[
+            ("efficientsam3_ev_m_image_encoder.onnx", 85_436_582, "2ed08306579138120dbf9f1110fd31784d1c20fe1b67fa2187a0a2a6d7c82729"),
+            ("efficientsam3_ev_m_text_encoder.onnx", 169_171_689, "3065ea6116f21f6e22bc70a0c041e5da9ae05fdec7b48df953394f5657609590"),
+            ("efficientsam3_ev_m_decoder.onnx", 129_858_624, "16accc22a07ee99c73ef8a14e286ec567f94c116e0d8efa1a3a6c0bc9a2596a8"),
+            ("@openai/clip-vit-base-patch32/vocab.json", 862_328, ""),
+            ("@openai/clip-vit-base-patch32/merges.txt", 524_657, ""),
+        ],
+        min_vram_mb: 0,
+        rank: 20,
+        multiple: 1,
+        dims: None,
+        gpu: false,
+        unzip: false,
+    },
+    Spec {
         id: "perspective-fields-gsv",
         kind: "align",
         name: "PerspectiveFields · Architecture & Street (GSV)",
@@ -256,6 +353,12 @@ fn installed(data: &Path, s: &Spec) -> bool {
         return dir(data, s).join(".unpacked").is_file();
     }
     s.files.iter().all(|(n, size, _)| fs::metadata(dir(data, s).join(source(s, n).1)).is_ok_and(|m| m.len() == *size))
+}
+
+/// Where model `id`'s `file` is, when the model is installed.
+pub fn model_file(data: &Path, id: &str, file: &str) -> Option<PathBuf> {
+    let s = spec(id).ok()?;
+    installed(data, s).then(|| dir(data, s).join(file))
 }
 
 #[derive(Serialize, Clone)]
@@ -472,6 +575,7 @@ pub fn remove(data: &Path, id: &str) -> Result<(), String> {
     *SD.lock().unwrap() = None;
     crate::moebius::reset();
     crate::perspective::reset();
+    crate::segment::reset();
     Ok(())
 }
 
@@ -613,10 +717,23 @@ fn decode(e: Px) -> Px {
     srgb_to_working(e)
 }
 
-/// Denoise `img` with the model, a tile at a time. The network sees the clipped sRGB picture; what it
-/// removes is subtracted from the original, so highlights above white and the colour space are kept.
-/// `strength` 0-100 blends the result in. `tick(done, total)` returns false to cancel.
-pub fn denoise(data: &Path, id: &str, img: Img, strength: f32, vram_mb: Option<u32>, tick: &dyn Fn(usize, usize) -> bool) -> Result<Img, String> {
+/// Denoise `img` with the model, a tile at a time. The network sees the clipped picture sRGB-encoded in
+/// `space` (working → its linear RGB, and back; None: sRGB itself): for a RAW, its own camera RGB
+/// (`libraw::camera_space`), where each channel's noise is still the sensor's own and not yet mixed by the
+/// colour matrix. What it removes is subtracted from the original, so highlights above white and the colour
+/// space are kept. `strength` 0-100 blends the result in. `tick(done, total)` returns false to cancel.
+pub fn denoise_in(
+    data: &Path,
+    id: &str,
+    img: Img,
+    strength: f32,
+    vram_mb: Option<u32>,
+    space: Option<(crate::develop::M3, crate::develop::M3)>,
+    tick: &dyn Fn(usize, usize) -> bool,
+) -> Result<Img, String> {
+    let (to, from) = space.unwrap_or((M2020_709, crate::develop::M709_2020));
+    let encode = |p: Px| mul(&to, p).map(|v| srgb_oetf(v.clamp(0.0, 1.0)));
+    let decode = |e: Px| mul(&from, e.map(crate::develop::srgb_eotf));
     let s = spec(id)?;
     if !installed(data, s) {
         return Err("download the AI model first (AI tab)".into());
@@ -950,7 +1067,7 @@ mod tests {
         };
         let before = err(&noisy);
         let t0 = std::time::Instant::now();
-        let out = denoise(&data, &id, Img { w, h, px: noisy }, 100.0, Some(12_000), &|d, t| {
+        let out = denoise_in(&data, &id, Img { w, h, px: noisy }, 100.0, Some(12_000), None, &|d, t| {
             eprint!("\rtile {}/{t}", d + 1);
             true
         })
@@ -1109,4 +1226,5 @@ sd15-inpaint: mean error in the hole {err:.3} (was {:.3}) in {:?}", 0.95 - 0.45,
         assert!(all.iter().any(|m| m.id == "moebius"));
     }
 }
+
 

@@ -17,6 +17,7 @@ mod perspective;
 mod remote;
 mod retouch;
 mod sdfill;
+mod segment;
 mod storage;
 mod updater;
 mod vision;
@@ -68,6 +69,10 @@ pub struct Settings {
     pub ai_denoise_model: String,
     pub ai_removal_model: String,
     pub ai_align_model: String,
+    /// Segment Anything: SAM 2.1 for click selection, SAM 3 for select by name and Auto masks (aimodel.rs ids);
+    /// empty: the best one installed.
+    pub ai_select_model: String,
+    pub ai_concept_model: String,
     /// Shares on a NAS or server, browsed in place like folders.
     pub network_drives: Vec<storage::NetworkDrive>,
     /// Cloud storage accounts; their secrets are in the keychain.
@@ -101,6 +106,8 @@ impl Default for Settings {
             ai_denoise_model: String::new(),
             ai_removal_model: String::new(),
             ai_align_model: String::new(),
+            ai_select_model: String::new(),
+            ai_concept_model: String::new(),
             network_drives: vec![],
             clouds: vec![],
             auto_check_updates: true,
@@ -117,6 +124,9 @@ impl Settings {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         for p in &mut s.providers {
+            if p.id == "cli:claude" && p.command.contains("mcp__openlight") {
+                p.command = p.command.replace("mcp__openlight", "mcp__optixel");
+            }
             if p.id == "cli:antigravity" && (p.command.starts_with("antigravity run") || p.command.is_empty()) {
                 p.command = "antigravity -p {{AGENT_PROMPT}} --dangerously-skip-permissions".into();
             }
@@ -288,6 +298,7 @@ pub struct Core {
 impl Core {
     pub fn open(dir: PathBuf) -> Result<Self, String> {
         fs::create_dir_all(dir.join("thumbs")).map_err(es)?;
+        develop::set_lut_dir(dir.join("luts"));
         let core = Core {
             db: Mutex::new(catalog::open(&dir.join("catalog.olcat"))?),
             settings: Mutex::new(Settings::load(&dir)),
@@ -316,6 +327,7 @@ impl Core {
             *db_guard = new_db;
             *dir_guard = new_dir.clone();
         }
+        develop::set_lut_dir(new_dir.join("luts"));
         // If the new directory has its own settings.json, load it;
         // otherwise preserve the current settings so preferences and credentials aren't lost
         let new_settings = if new_dir.join("settings.json").is_file() {
@@ -342,6 +354,13 @@ impl Core {
 
     pub fn save_settings(&self) -> Result<(), String> {
         gpu::set_enabled(self.settings.lock().unwrap().gpu_accel);
+        let (enabled, port, token) = {
+            let s = self.settings.lock().unwrap();
+            (s.mcp_enabled, s.mcp_port, s.mcp_token.clone())
+        };
+        if enabled {
+            ai::sync_antigravity_mcp(&format!("http://127.0.0.1:{port}/mcp"), &token);
+        }
         let path = self.dir().join("settings.json");
         let s = serde_json::to_string_pretty(&*self.settings.lock().unwrap()).map_err(es)?;
         fs::write(&path, s).map_err(es)?;
@@ -834,6 +853,29 @@ fn icc_profiles(core: St) -> Vec<icc::IccProfileEntry> {
     icc::list_profiles(&core.dir())
 }
 
+/// The .cube looks imported into `<data_dir>/luts/`, by file name.
+#[tauri::command]
+fn lut_list(core: St) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(core.dir().join("luts"))
+        .map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.to_ascii_lowercase().ends_with(".cube")).collect())
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// Imports a .cube 3D LUT into `<data_dir>/luts/` (after checking it parses) and returns its name there.
+#[tauri::command(async)]
+fn lut_import(core: St, path: String) -> Result<String, String> {
+    let src = Path::new(&path);
+    let text = fs::read_to_string(src).map_err(|e| format!("read {path}: {e}"))?;
+    develop::Lut3d::parse(&text).map_err(|e| format!("{}: {e}", src.file_name().unwrap_or_default().to_string_lossy()))?;
+    let name = src.file_name().ok_or("missing file name")?.to_string_lossy().to_string();
+    let dir = core.dir().join("luts");
+    fs::create_dir_all(&dir).map_err(es)?;
+    fs::write(dir.join(&name), text).map_err(es)?;
+    Ok(name)
+}
+
 /// Imports a custom printer/paper/display `.icc` or `.icm` profile into `<data_dir>/icc_profiles/`.
 #[tauri::command(async)]
 fn icc_import_profile(core: St, path: String) -> Result<icc::IccProfileEntry, String> {
@@ -899,7 +941,15 @@ fn jpeg_lossless(core: St, id: i64, op: String, crop: Option<[i32; 4]>) -> Resul
     let transformed = libraw::jpeg_lossless_transform(&jpeg_bytes, op_str, crop)?;
     let tmp = path.with_extension("lossless_tmp.jpg");
     fs::write(&tmp, &transformed).map_err(es)?;
-    fs::rename(&tmp, path).map_err(es)?;
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(es(e));
+    }
+    // the catalog's size is the upright one: the new pixels, turned as the (kept) EXIF orientation says
+    if let Ok(hd) = turbojpeg::read_header(&transformed) {
+        let (w, h) = if catalog::exif_orientation(path) >= 5 { (hd.height, hd.width) } else { (hd.width, hd.height) };
+        core.db().execute("UPDATE photos SET width = ?, height = ? WHERE id = ?", (w as i64, h as i64, id)).map_err(es)?;
+    }
     core.cache.lock().unwrap().clear();
     *core.full.lock().unwrap() = None;
     let dev = core.develop(id).unwrap_or_default();
@@ -923,7 +973,34 @@ fn focus_peaking(core: St, id: i64, threshold: Option<f32>) -> Result<Value, Str
         .chunks_exact(4)
         .flat_map(|c| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0])
         .collect();
-    let (mask, score, ear, blink) = libraw::focus_peaking_and_blink(&flat_rgb, out.w, out.h, threshold.unwrap_or(0.22), &[]);
+    // the face scan's faces, in the (cropped) frame the overlay covers; a straightened crop: no eyes, rather than wrong ones
+    let c = &d.crop;
+    let eyes: Vec<[[f32; 2]; 2]> = if c.angle.abs() > 1e-3 {
+        vec![]
+    } else {
+        faces::photo_eyes(&core.db(), p.master_id.unwrap_or(p.id))
+            .into_iter()
+            .map(|e| e.map(|[x, y]| [(x - c.x) / c.w.max(1e-3), (y - c.y) / c.h.max(1e-3)]))
+            .filter(|e| e.iter().all(|[x, y]| (0.0..=1.0).contains(x) && (0.0..=1.0).contains(y)))
+            .collect()
+    };
+    let patches: Vec<[f32; 8]> = eyes.iter().map(|e| faces::eye_patches(*e, out.w, out.h)).collect();
+    let (mask, score) = libraw::focus_peaking(&flat_rgb, out.w, out.h, threshold.unwrap_or(0.22), &patches);
+    // the most closed face's eye aspect ratio, from its landmarks (None without faces or the landmark model)
+    let boxes: Vec<[f32; 4]> = if c.angle.abs() > 1e-3 {
+        vec![]
+    } else {
+        faces::photo_boxes(&core.db(), p.master_id.unwrap_or(p.id))
+            .into_iter()
+            .map(|b| [(b[0] - c.x) / c.w.max(1e-3), (b[1] - c.y) / c.h.max(1e-3), b[2] / c.w.max(1e-3), b[3] / c.h.max(1e-3)])
+            .filter(|b| (0.0..=1.0).contains(&(b[0] + b[2] / 2.0)) && (0.0..=1.0).contains(&(b[1] + b[3] / 2.0)))
+            .collect()
+    };
+    let ear: Option<f32> = if boxes.is_empty() {
+        None
+    } else {
+        faces::eye_aspects(&core.dir(), &out, &boxes).and_then(|e| e.into_iter().reduce(f32::min))
+    };
     let mut overlay = vec![0u8; out.w * out.h * 4];
     for (i, &m) in mask.iter().enumerate() {
         if m > 16 {
@@ -942,8 +1019,10 @@ fn focus_peaking(core: St, id: i64, threshold: Option<f32>) -> Result<Value, Str
     let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
     Ok(json!({
         "focus_score": (score * 10.0).round() / 10.0,
-        "eye_openness": (ear * 100.0).round() / 100.0,
-        "blink_detected": blink,
+        "faces": eyes.len(),
+        // null without faces (or the landmark model): nothing to say about eyes
+        "eye_openness": ear.map(|e| (e * 100.0).round() / 100.0),
+        "blink_detected": ear.map(|e| e < faces::BLINK_EAR),
         "overlay_data_url": format!("data:image/png;base64,{b64}"),
     }))
 }
@@ -955,8 +1034,26 @@ fn semantic_mask_16bit(core: St, id: i64, target: String, feather: Option<f32>) 
     let p = core.photo(id)?;
     let proxy = core.proxy(&p.path)?;
     let rgb = vision::Rgb::from_working(&proxy, 512);
-    let mask16 = vision::semantic_mask_16bit(&rgb, &target, feather.unwrap_or(20.0))
-        .ok_or_else(|| format!("Could not detect {target} region in photo"))?;
+    let concept = segment::pick(&core.dir(), "concept", &core.settings.lock().unwrap().ai_concept_model);
+    let mask16 = match concept {
+        // SAM 3's probabilities, feathered against the photo like the estimate below
+        Some(model) => {
+            let what = match target.as_str() {
+                "sky" => "sky",
+                "subject" | "background" => "person",
+                t => return Err(format!("unknown target '{t}'")),
+            };
+            let found = segment::concept(&core.dir(), &model, &proxy, &format!("{id}:proxy"), what, 0.5)?;
+            let prob = segment::Prob::union(&found.into_iter().map(|f| f.1).collect::<Vec<_>>()).ok_or_else(|| format!("Could not detect {target} region in photo"))?;
+            let mut alpha = prob.resize(rgb.w, rgb.h);
+            if target == "background" {
+                alpha.iter_mut().for_each(|a| *a = 1.0 - *a);
+            }
+            let radius = ((feather.unwrap_or(20.0).clamp(0.0, 100.0) * 0.25).round() as i32).max(4);
+            libraw::guided_feather_16bit(&rgb.luma(), &alpha, rgb.w, rgb.h, radius, 1e-3).0
+        }
+        None => vision::semantic_mask_16bit(&rgb, &target, feather.unwrap_or(20.0)).ok_or_else(|| format!("Could not detect {target} region in photo"))?,
+    };
     let coverage = mask16.iter().filter(|&&v| v > 32768).count() as f32 / mask16.len().max(1) as f32 * 100.0;
     Ok(json!({
         "id": id,
@@ -1323,11 +1420,15 @@ fn ai_denoise_inplace(
     let p = core.photo(id)?;
     let job = crate::auto::Job::start(&core, "ai-denoise");
     let file = core.local_file(&p.path)?;
-    let img = core.decode(&file, None)?;
+    // decoded as the photo's own RAW settings decode it, so the cache lines up with what is rendered
+    let raw_settings = core.develop(id).map(|d| d.raw).unwrap_or_default();
+    let img = (*core.full_image_with(&p.path, &raw_settings)?).clone();
     let vram = aimodel::hardware().vram_mb;
+    // a RAW is denoised in its camera's own RGB, before the colour matrix mixes the channels' noise
+    let space = develop::is_raw(&file).then(|| fs::read(&file).ok().and_then(|b| libraw::camera_space(&b))).flatten();
 
-    job.progress("Starting AI denoise", 0, 1);
-    let denoised_img = aimodel::denoise(&core.dir(), &model, img, 100.0, vram, &|done, total| {
+    job.progress(if space.is_some() { "Starting AI denoise (camera RGB)" } else { "Starting AI denoise" }, 0, 1);
+    let denoised_img = aimodel::denoise_in(&core.dir(), &model, img, 100.0, vram, space, &|done, total| {
         let label = if total > 1 {
             format!("Denoising tile {} of {}", (done + 1).min(total), total)
         } else {
@@ -1398,6 +1499,26 @@ fn ai_run(core: St, id: i64, prompt: String, provider: String) -> Result<String,
 }
 
 /// AI selection: the object at (x, y) of the full frame joins mask `mask` (or a new one).
+/// Local click selection with SAM 2.1: the object at (x, y) (fractions of the full frame) as a new mask, or
+/// with `subtract` taken away from mask `mask`. `part`: SAM's surest reading of the click (a shirt) rather
+/// than the whole object (the person).
+#[tauri::command(async)]
+fn sam_select(core: St, id: i64, x: f32, y: f32, mask: Option<usize>, subtract: bool, part: Option<bool>) -> Result<Value, String> {
+    if !x.is_finite() || !y.is_finite() || !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+        return Err("invalid selection coordinates".to_string());
+    }
+    let (develop, mask) = segment::select_at(core.inner(), id, [x, y], mask, subtract, part.unwrap_or(false))?;
+    Ok(json!({ "develop": develop, "mask": mask }))
+}
+
+/// Select by name with SAM 3: every instance of `what` ("sky", "person", "red car") as one new mask (or with
+/// `subtract` taken away from mask `mask`); `invert`: everything but them. Reports how many it found.
+#[tauri::command(async)]
+fn sam_select_concept(core: St, id: i64, what: String, mask: Option<usize>, subtract: bool, invert: Option<bool>) -> Result<Value, String> {
+    let (develop, mask, found) = segment::select_by_name(core.inner(), id, &what, mask, subtract, invert.unwrap_or(false), None)?;
+    Ok(json!({ "develop": develop, "mask": mask, "found": found }))
+}
+
 #[tauri::command(async)]
 fn ai_select(core: St, id: i64, x: f32, y: f32, provider: String, mask: Option<usize>, subtract: bool) -> Result<Value, String> {
     if !x.is_finite() || !y.is_finite() || !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
@@ -1746,6 +1867,8 @@ pub fn run() {
             render_scopes,
             icc_profiles,
             icc_import_profile,
+            lut_list,
+            lut_import,
             xmp_sync,
             jpeg_lossless,
             focus_peaking,
@@ -1782,6 +1905,8 @@ pub fn run() {
             set_provider_key,
             ai_run,
             ai_select,
+            sam_select,
+            sam_select_concept,
             immich_connect,
             immich_albums,
             immich_open,

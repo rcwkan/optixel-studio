@@ -1,5 +1,7 @@
 //! Optional GPU acceleration (wgpu: DX12/Vulkan/Metal) using Ahead-of-Time (AOT) compiled
-//! stripped SPIR-V (.spv) binary compute kernels generated at build time (`build.rs`).
+//! stripped SPIR-V (.spv) binary compute kernels generated at build time (`build.rs`): the develop stack
+//! (with a 3D LUT look), the box blur under clarity, texture, dehaze and defringe, lateral chromatic
+//! aberration, and the scopes. Each kernel does the CPU path's arithmetic, so a photo looks the same either way.
 //! Detected once; every entry point returns `None` when there is no GPU or it is switched off,
 //! and the caller keeps its CPU path.
 
@@ -23,7 +25,7 @@ pub const MAX_SW: usize = 8;
 
 /// Ahead-of-Time (AOT) stripped SPIR-V compute kernels embedded at build time.
 pub const DEVELOP_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/develop_stack.spv"));
-pub const CLARITY_DEHAZE_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/clarity_dehaze.spv"));
+pub const BLUR_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/box_blur.spv"));
 pub const LUT3D_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lut3d.spv"));
 pub const CA_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/chromatic_aberration.spv"));
 pub const SCOPES_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/scopes.spv"));
@@ -37,13 +39,12 @@ struct Gpu {
     queue: wgpu::Queue,
     lock: std::sync::Mutex<()>,
     pipeline: wgpu::ComputePipeline,
-    #[allow(dead_code)]
-    clarity_pipeline: wgpu::ComputePipeline,
-    #[allow(dead_code)]
+    blur_pipeline: wgpu::ComputePipeline,
     lut3d_pipeline: wgpu::ComputePipeline,
-    #[allow(dead_code)]
     ca_pipeline: wgpu::ComputePipeline,
     scopes_pipeline: wgpu::ComputePipeline,
+    /// the largest storage buffer one binding takes (the adapter's own, not wgpu's 128 MiB default)
+    max_binding: u64,
 }
 
 /// Global tone (`develop::Tone`) coefficients.
@@ -65,6 +66,8 @@ pub struct Stack<'a> {
     pub params: Vec<f32>,
     /// Levels LUTs (1025 entries per channel) when the Pro section uses them.
     pub levels: Option<&'a [Vec<f32>; 3]>,
+    /// A 3D LUT look on the result (`develop::Lut3d`), and how much of it.
+    pub look: Option<(&'a crate::develop::Lut3d, f32)>,
 }
 
 fn make_pipeline(device: &wgpu::Device, label: &str, spv: &[u8], entry_point: &str) -> wgpu::ComputePipeline {
@@ -93,9 +96,13 @@ fn init() -> Option<Gpu> {
     if info.device_type == wgpu::DeviceType::Cpu {
         return None; // software rasterizer: slower than our rayon path
     }
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+    // the adapter's buffer limits: a 36 MP float plane alone is past wgpu's default 128 MiB
+    let al = adapter.limits();
+    let required_limits = wgpu::Limits { max_storage_buffer_binding_size: al.max_storage_buffer_binding_size, max_buffer_size: al.max_buffer_size, ..wgpu::Limits::default() };
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_limits, ..Default::default() })).ok()?;
+    let max_binding = (al.max_storage_buffer_binding_size as u64).min(al.max_buffer_size);
     let pipeline = make_pipeline(&device, "develop_stack_spv", DEVELOP_SPV, "main");
-    let clarity_pipeline = make_pipeline(&device, "clarity_dehaze_spv", CLARITY_DEHAZE_SPV, "main");
+    let blur_pipeline = make_pipeline(&device, "box_blur_spv", BLUR_SPV, "main");
     let lut3d_pipeline = make_pipeline(&device, "lut3d_spv", LUT3D_SPV, "main");
     let ca_pipeline = make_pipeline(&device, "chromatic_aberration_spv", CA_SPV, "main");
     let scopes_pipeline = make_pipeline(&device, "scopes_spv", SCOPES_SPV, "accumulate");
@@ -105,10 +112,11 @@ fn init() -> Option<Gpu> {
         queue,
         lock: std::sync::Mutex::new(()),
         pipeline,
-        clarity_pipeline,
+        blur_pipeline,
         lut3d_pipeline,
         ca_pipeline,
         scopes_pipeline,
+        max_binding,
     })
 }
 
@@ -130,7 +138,7 @@ pub fn set_enabled(on: bool) {
 pub fn spirv_manifest() -> Vec<(&'static str, usize)> {
     vec![
         ("develop_stack.spv", DEVELOP_SPV.len()),
-        ("clarity_dehaze.spv", CLARITY_DEHAZE_SPV.len()),
+        ("box_blur.spv", BLUR_SPV.len()),
         ("lut3d.spv", LUT3D_SPV.len()),
         ("chromatic_aberration.spv", CA_SPV.len()),
         ("scopes.spv", SCOPES_SPV.len()),
@@ -154,9 +162,10 @@ pub fn run(src: &[Px], s: &Stack) -> Option<Vec<Px>> {
     let lut = buf(&s.curves.map_or_else(|| vec![0.0; 3], |l| l.concat()));
     let lv = buf(&s.levels.map_or_else(|| vec![0.0; 3], |l| l.concat()));
     let prm = buf(&s.params);
+    let look = s.look.map(|(l, _)| buf(&l.rgb));
     let mut out: Vec<Px> = Vec::with_capacity(src.len());
     for chunk in src.chunks(CHUNK) {
-        out.extend(dispatch(g, chunk, s, lut_n, [&lut, &prm, &lv])?);
+        out.extend(dispatch(g, chunk, s, lut_n, [&lut, &prm, &lv], look.as_ref())?);
     }
     Some(out)
 }
@@ -165,7 +174,7 @@ fn entry(binding: u32, b: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
     wgpu::BindGroupEntry { binding, resource: b.as_entire_binding() }
 }
 
-fn dispatch(g: &Gpu, px: &[Px], s: &Stack, lut_n: u32, [lut, prm, lv]: [&wgpu::Buffer; 3]) -> Option<Vec<Px>> {
+fn dispatch(g: &Gpu, px: &[Px], s: &Stack, lut_n: u32, [lut, prm, lv]: [&wgpu::Buffer; 3], look: Option<&wgpu::Buffer>) -> Option<Vec<Px>> {
     let _guard = g.lock.lock().ok()?;
     let bytes = std::mem::size_of_val(px) as u64;
     let t = s.tone.unwrap_or(ToneP { a_sh: 0.0, a_hi: 0.0, bp: 0.0, wp: 1.0, k: 0.0 });
@@ -211,6 +220,15 @@ fn dispatch(g: &Gpu, px: &[Px], s: &Stack, lut_n: u32, [lut, prm, lv]: [&wgpu::B
         pass.set_bind_group(0, &bind, &[]);
         pass.dispatch_workgroups((px.len() as u32).div_ceil(256), 1, 1);
     }
+    // the look on the result, in place, before it leaves the GPU
+    if let (Some(lb), Some((l, amount))) = (look, s.look) {
+        let u = uniform(g, &[px.len() as u32, l.size as u32, amount.to_bits(), 0]);
+        let look_bind = bind_group(g, &g.lut3d_pipeline, &[&dst, lb, &u]);
+        let mut pass = enc.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&g.lut3d_pipeline);
+        pass.set_bind_group(0, &look_bind, &[]);
+        pass.dispatch_workgroups((px.len() as u32).div_ceil(256), 1, 1);
+    }
     enc.copy_buffer_to_buffer(&dst, 0, &read, 0, bytes);
     g.queue.submit([enc.finish()]);
     let (tx, rx) = std::sync::mpsc::channel();
@@ -226,22 +244,31 @@ fn dispatch(g: &Gpu, px: &[Px], s: &Stack, lut_n: u32, [lut, prm, lv]: [&wgpu::B
     Some(out)
 }
 
-#[allow(dead_code)]
-fn px_to_vec4(src: &[Px]) -> Vec<[f32; 4]> {
-    src.iter().map(|p| [p[0], p[1], p[2], 1.0]).collect()
+fn uniform(g: &Gpu, words: &[u32; 4]) -> wgpu::Buffer {
+    g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(words), usage: wgpu::BufferUsages::UNIFORM })
 }
 
-#[allow(dead_code)]
-fn readback_vec4(g: &Gpu, dst: &wgpu::Buffer, count: usize) -> Option<Vec<Px>> {
-    let bytes = (count * 16) as u64;
-    let read = g.device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: bytes,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let mut enc = g.device.create_command_encoder(&Default::default());
-    enc.copy_buffer_to_buffer(dst, 0, &read, 0, bytes);
+const RW: wgpu::BufferUsages = wgpu::BufferUsages::STORAGE.union(wgpu::BufferUsages::COPY_SRC).union(wgpu::BufferUsages::COPY_DST);
+
+/// A storage buffer holding `data`, which passes may also write and which can be read back.
+fn storage(g: &Gpu, data: &[u8]) -> wgpu::Buffer {
+    g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: data, usage: RW })
+}
+
+/// An uninitialised storage buffer of `bytes` (nothing uploaded) for a pass to write.
+fn scratch(g: &Gpu, bytes: u64) -> wgpu::Buffer {
+    g.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: bytes, usage: RW, mapped_at_creation: false })
+}
+
+fn bind_group(g: &Gpu, p: &wgpu::ComputePipeline, bufs: &[&wgpu::Buffer]) -> wgpu::BindGroup {
+    let entries: Vec<_> = bufs.iter().enumerate().map(|(i, b)| entry(i as u32, b)).collect();
+    g.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &p.get_bind_group_layout(0), entries: &entries })
+}
+
+/// Submits `enc`, then `buf`'s first `bytes`.
+fn finish_and_read(g: &Gpu, mut enc: wgpu::CommandEncoder, buf: &wgpu::Buffer, bytes: u64) -> Option<Vec<u8>> {
+    let read = g.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: bytes, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+    enc.copy_buffer_to_buffer(buf, 0, &read, 0, bytes);
     g.queue.submit([enc.finish()]);
     let (tx, rx) = std::sync::mpsc::channel();
     read.slice(..).map_async(wgpu::MapMode::Read, move |r| {
@@ -249,169 +276,61 @@ fn readback_vec4(g: &Gpu, dst: &wgpu::Buffer, count: usize) -> Option<Vec<Px>> {
     });
     g.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
     rx.recv().ok()?.ok()?;
-    let data = read.slice(..).get_mapped_range().ok()?;
-    let out: Vec<Px> = bytemuck::cast_slice::<u8, [f32; 4]>(&data)
-        .iter()
-        .map(|v| [v[0], v[1], v[2]])
-        .collect();
-    drop(data);
+    let out = read.slice(..).get_mapped_range().ok()?.to_vec();
     read.unmap();
     Some(out)
 }
 
-/// Runs the pre-compiled SPIR-V Local Clarity, Texture & Dark-Channel Dehaze compute kernel.
-#[allow(dead_code)]
-pub fn run_clarity_dehaze(src: &[Px], w: u32, h: u32, clarity: f32, dehaze: f32, texture_amt: f32) -> Option<Vec<Px>> {
-    if !ENABLED.load(Ordering::Relaxed) || (w as usize) * (h as usize) != src.len() {
+/// `develop::blur`'s box passes on the GPU: radius `r`, three along the rows then three down the
+/// columns, with the CPU's running sums. None: off, no GPU, or more than one buffer holds.
+pub fn box_blur(src: &[f32], w: usize, h: usize, r: usize) -> Option<Vec<f32>> {
+    if !ENABLED.load(Ordering::Relaxed) || w == 0 || h == 0 || src.len() != w * h {
         return None;
     }
     let g = gpu()?;
-    let _guard = g.lock.lock().ok()?;
-    let src4 = px_to_vec4(src);
-    let bytes = (src4.len() * 16) as u64;
-    if bytes > 120 * 1024 * 1024 {
+    let bytes = std::mem::size_of_val(src) as u64;
+    if bytes > g.max_binding {
         return None;
     }
-    let radius = ((w.max(h) as f32) * 0.004).round().clamp(2.0, 16.0) as u32;
-    let bits = f32::from_bits;
-    let u = [bits(w), bits(h), clarity, dehaze, texture_amt, bits(radius), 0.0, 0.0];
-    let uni = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None,
-        contents: bytemuck::cast_slice(&u),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-    let src_buf = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None,
-        contents: bytemuck::cast_slice(&src4),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-    let dst_buf = g.device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: bytes,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    let bind = g.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
-        layout: &g.clarity_pipeline.get_bind_group_layout(0),
-        entries: &[entry(0, &src_buf), entry(1, &dst_buf), entry(2, &uni)],
-    });
+    let _guard = g.lock.lock().ok()?;
+    let (a, b) = (storage(g, bytemuck::cast_slice(src)), scratch(g, bytes));
     let mut enc = g.device.create_command_encoder(&Default::default());
-    {
+    for (k, axis) in [0u32, 0, 0, 1, 1, 1].into_iter().enumerate() {
+        let (from, to) = if k % 2 == 0 { (&a, &b) } else { (&b, &a) };
+        let u = uniform(g, &[w as u32, h as u32, r as u32, axis]);
+        let bg = bind_group(g, &g.blur_pipeline, &[from, to, &u]);
         let mut pass = enc.begin_compute_pass(&Default::default());
-        pass.set_pipeline(&g.clarity_pipeline);
-        pass.set_bind_group(0, &bind, &[]);
-        pass.dispatch_workgroups(w.div_ceil(16), h.div_ceil(16), 1);
+        pass.set_pipeline(&g.blur_pipeline);
+        pass.set_bind_group(0, &bg, &[]);
+        pass.dispatch_workgroups((if axis == 1 { w } else { h } as u32).div_ceil(64), 1, 1);
     }
-    g.queue.submit([enc.finish()]);
-    readback_vec4(g, &dst_buf, src.len())
+    // six passes, so the result is back in `a`
+    finish_and_read(g, enc, &a, bytes).map(|v| bytemuck::cast_slice(&v).to_vec())
 }
 
-/// Runs the pre-compiled SPIR-V 3D LUT trilinear interpolation compute kernel.
-#[allow(dead_code)]
-pub fn run_lut3d(src: &[Px], w: u32, h: u32, lut_rgb: &[Px], lut_size: u32, strength: f32) -> Option<Vec<Px>> {
-    if !ENABLED.load(Ordering::Relaxed) || (w as usize) * (h as usize) != src.len() {
+/// `develop::lens`'s lateral chromatic aberration on the GPU: red and blue rescaled about the centre by
+/// `scale_red` and `scale_blue`, in linear sRGB.
+pub fn lateral_ca(px: &[Px], w: usize, h: usize, scale_red: f32, scale_blue: f32) -> Option<Vec<Px>> {
+    if !ENABLED.load(Ordering::Relaxed) || w == 0 || h == 0 || px.len() != w * h {
         return None;
     }
     let g = gpu()?;
+    let bytes = std::mem::size_of_val(px) as u64;
+    if bytes > g.max_binding {
+        return None;
+    }
     let _guard = g.lock.lock().ok()?;
-    let src4 = px_to_vec4(src);
-    let lut4 = px_to_vec4(lut_rgb);
-    let bytes = (src4.len() * 16) as u64;
-    if bytes > 120 * 1024 * 1024 {
-        return None;
-    }
-    let bits = f32::from_bits;
-    let u = [bits(w), bits(h), bits(lut_size), strength];
-    let uni = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None,
-        contents: bytemuck::cast_slice(&u),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-    let src_buf = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None,
-        contents: bytemuck::cast_slice(&src4),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-    let lut_buf = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None,
-        contents: bytemuck::cast_slice(&lut4),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-    let dst_buf = g.device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: bytes,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    let bind = g.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
-        layout: &g.lut3d_pipeline.get_bind_group_layout(0),
-        entries: &[entry(0, &src_buf), entry(1, &lut_buf), entry(2, &dst_buf), entry(3, &uni)],
-    });
-    let mut enc = g.device.create_command_encoder(&Default::default());
-    {
-        let mut pass = enc.begin_compute_pass(&Default::default());
-        pass.set_pipeline(&g.lut3d_pipeline);
-        pass.set_bind_group(0, &bind, &[]);
-        pass.dispatch_workgroups(w.div_ceil(16), h.div_ceil(16), 1);
-    }
-    g.queue.submit([enc.finish()]);
-    readback_vec4(g, &dst_buf, src.len())
-}
-
-/// Runs the pre-compiled SPIR-V Chromatic Aberration (lateral + axial defringe) compute kernel.
-#[allow(dead_code)]
-pub fn run_chromatic_aberration(
-    src: &[Px],
-    w: u32,
-    h: u32,
-    ca_red_cyan: f32,
-    ca_blue_yellow: f32,
-    axial_defringe: f32,
-) -> Option<Vec<Px>> {
-    if !ENABLED.load(Ordering::Relaxed) || (w as usize) * (h as usize) != src.len() {
-        return None;
-    }
-    let g = gpu()?;
-    let _guard = g.lock.lock().ok()?;
-    let src4 = px_to_vec4(src);
-    let bytes = (src4.len() * 16) as u64;
-    if bytes > 120 * 1024 * 1024 {
-        return None;
-    }
-    let bits = f32::from_bits;
-    let u = [bits(w), bits(h), ca_red_cyan, ca_blue_yellow, axial_defringe, 0.0, 0.0, 0.0];
-    let uni = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None,
-        contents: bytemuck::cast_slice(&u),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-    let src_buf = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None,
-        contents: bytemuck::cast_slice(&src4),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-    let dst_buf = g.device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: bytes,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    let bind = g.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
-        layout: &g.ca_pipeline.get_bind_group_layout(0),
-        entries: &[entry(0, &src_buf), entry(1, &dst_buf), entry(2, &uni)],
-    });
+    let (src, dst) = (storage(g, bytemuck::cast_slice(px)), scratch(g, bytes));
+    let u = uniform(g, &[w as u32, h as u32, scale_red.to_bits(), scale_blue.to_bits()]);
+    let bg = bind_group(g, &g.ca_pipeline, &[&src, &dst, &u]);
     let mut enc = g.device.create_command_encoder(&Default::default());
     {
         let mut pass = enc.begin_compute_pass(&Default::default());
         pass.set_pipeline(&g.ca_pipeline);
-        pass.set_bind_group(0, &bind, &[]);
-        pass.dispatch_workgroups(w.div_ceil(16), h.div_ceil(16), 1);
+        pass.set_bind_group(0, &bg, &[]);
+        pass.dispatch_workgroups((w as u32).div_ceil(16), (h as u32).div_ceil(16), 1);
     }
-    g.queue.submit([enc.finish()]);
-    readback_vec4(g, &dst_buf, src.len())
+    finish_and_read(g, enc, &dst, bytes).map(|v| bytemuck::cast_slice::<u8, f32>(&v).chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect())
 }
 
 /// Runs the pre-compiled SPIR-V RGB Parade & Waveform scope accumulation kernel on the GPU.
@@ -431,9 +350,8 @@ pub fn run_scopes(src_rgba: &[u8], w: u32, h: u32, scope_w: u32, scope_h: u32) -
             1.0f32,
         ]);
     }
-    let bin_len = (scope_w as usize) * (scope_h as usize) * 3;
-    let bin_bytes = (bin_len * 4) as u64;
-    let zeros = vec![0u32; bin_len];
+    let (p_len, w_len) = ((scope_w * scope_h * 3) as usize, (scope_w * scope_h * 4) as usize);
+    let (p_bytes, w_bytes) = ((p_len * 4) as u64, (w_len * 4) as u64);
 
     let bits = f32::from_bits;
     let u = [bits(w), bits(h), bits(scope_w), bits(scope_h)];
@@ -449,23 +367,23 @@ pub fn run_scopes(src_rgba: &[u8], w: u32, h: u32, scope_w: u32, scope_h: u32) -
     });
     let parade_buf = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
-        contents: bytemuck::cast_slice(&zeros),
+        contents: bytemuck::cast_slice(&vec![0u32; p_len]),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     });
     let wf_buf = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
-        contents: bytemuck::cast_slice(&zeros),
+        contents: bytemuck::cast_slice(&vec![0u32; w_len]),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     });
     let read_parade = g.device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: bin_bytes,
+        size: p_bytes,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     let read_wf = g.device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: bin_bytes,
+        size: w_bytes,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -487,8 +405,8 @@ pub fn run_scopes(src_rgba: &[u8], w: u32, h: u32, scope_w: u32, scope_h: u32) -
         pass.set_bind_group(0, &bind, &[]);
         pass.dispatch_workgroups(w.div_ceil(16), h.div_ceil(16), 1);
     }
-    enc.copy_buffer_to_buffer(&parade_buf, 0, &read_parade, 0, bin_bytes);
-    enc.copy_buffer_to_buffer(&wf_buf, 0, &read_wf, 0, bin_bytes);
+    enc.copy_buffer_to_buffer(&parade_buf, 0, &read_parade, 0, p_bytes);
+    enc.copy_buffer_to_buffer(&wf_buf, 0, &read_wf, 0, w_bytes);
     g.queue.submit([enc.finish()]);
 
     let (tx1, rx1) = std::sync::mpsc::channel();
@@ -505,49 +423,43 @@ pub fn run_scopes(src_rgba: &[u8], w: u32, h: u32, scope_w: u32, scope_h: u32) -
 
     let p_data = read_parade.slice(..).get_mapped_range().ok()?;
     let w_data = read_wf.slice(..).get_mapped_range().ok()?;
-    let p_bins: &[u32] = bytemuck::cast_slice(&p_data);
-    let w_bins: &[u32] = bytemuck::cast_slice(&w_data);
-
-    let sw = scope_w as usize;
-    let sh = scope_h as usize;
-    let scale = ((h as f32) / (sh as f32).max(1.0)).max(1.0) * 3.5;
-
-    let mut parade_rgba = vec![0u8; sw * sh * 4];
-    let mut wf_rgba = vec![0u8; sw * sh * 4];
-    let graticule_rows = [sh / 4, sh / 2, (sh * 3) / 4];
-
-    for y in 0..sh {
-        let is_grat = graticule_rows.contains(&y);
-        let bg = if is_grat { 34u8 } else { 14u8 };
-        for x in 0..sw {
-            let idx = y * sw + x;
-            let pr = p_bins[idx * 3] as f32;
-            let pg = p_bins[idx * 3 + 1] as f32;
-            let pb = p_bins[idx * 3 + 2] as f32;
-
-            let r_val = ((1.0 - (-pr / scale).exp()) * 255.0).clamp(bg as f32, 255.0) as u8;
-            let g_val = ((1.0 - (-pg / scale).exp()) * 255.0).clamp(bg as f32, 255.0) as u8;
-            let b_val = ((1.0 - (-pb / scale).exp()) * 255.0).clamp(bg as f32, 255.0) as u8;
-            parade_rgba[idx * 4] = r_val;
-            parade_rgba[idx * 4 + 1] = g_val;
-            parade_rgba[idx * 4 + 2] = b_val;
-            parade_rgba[idx * 4 + 3] = 255;
-
-            let wr = w_bins[idx * 3] as f32 / 16.0;
-            let wg = w_bins[idx * 3 + 1] as f32 / 16.0;
-            let wb = w_bins[idx * 3 + 2] as f32 / 16.0;
-            wf_rgba[idx * 4] = ((1.0 - (-wr / scale).exp()) * 255.0).clamp(bg as f32, 255.0) as u8;
-            wf_rgba[idx * 4 + 1] = ((1.0 - (-wg / scale).exp()) * 255.0).clamp(bg as f32, 255.0) as u8;
-            wf_rgba[idx * 4 + 2] = ((1.0 - (-wb / scale).exp()) * 255.0).clamp(bg as f32, 255.0) as u8;
-            wf_rgba[idx * 4 + 3] = 255;
-        }
-    }
-
+    let out = render_scopes(bytemuck::cast_slice(&p_data), bytemuck::cast_slice(&w_data), scope_w as usize, scope_h as usize, px_count);
     drop(p_data);
     drop(w_data);
     read_parade.unmap();
     read_wf.unmap();
-    Some((parade_rgba, wf_rgba))
+    Some(out)
+}
+
+/// Scope bins as `scopes.wgsl` (or the C++ fallback, `ol_scope_bins`) fills them, drawn as RGBA8 images
+/// for a photo of `px` pixels. A bin's brightness follows its density against an even spread of the
+/// photo's pixels, 1 - e^(-n / 2·even); the waveform takes its hue from its pixels' average colour.
+/// Dark ground, graticule lines at 25 / 50 / 75%.
+pub fn render_scopes(parade: &[u32], wave: &[u32], sw: usize, sh: usize, px: usize) -> (Vec<u8>, Vec<u8>) {
+    let even_p = px as f32 / ((sw / 3).max(1) * sh) as f32;
+    let even_w = px as f32 / (sw * sh) as f32;
+    let tone = |n: f32, even: f32| 1.0 - (-n / (2.0 * even.max(1e-6))).exp();
+    let grat = [sh / 4, sh / 2, sh * 3 / 4];
+    let (mut p_rgba, mut w_rgba) = (vec![0u8; sw * sh * 4], vec![0u8; sw * sh * 4]);
+    for i in 0..sw * sh {
+        let ground = if grat.contains(&(i / sw)) { 34.0 } else { 14.0 };
+        let px8 = |v: f32| (v * 255.0).clamp(ground, 255.0) as u8;
+        for k in 0..3 {
+            p_rgba[i * 4 + k] = px8(tone(parade[i * 3 + k] as f32, even_p));
+        }
+        // each pixel added 16 per full channel plus 1, and 1 to the count
+        let n = wave[i * 4 + 3] as f32;
+        let avg = [0, 1, 2].map(|k| if n > 0.0 { (wave[i * 4 + k] as f32 / n - 1.0) / 16.0 } else { 0.0 });
+        let top = avg.iter().fold(0.0f32, |a, &b| a.max(b));
+        let d = tone(n, even_w);
+        for k in 0..3 {
+            let tint = if top > 1e-3 { avg[k] / top } else { 1.0 };
+            w_rgba[i * 4 + k] = px8(d * (0.3 + 0.7 * tint));
+        }
+        p_rgba[i * 4 + 3] = 255;
+        w_rgba[i * 4 + 3] = 255;
+    }
+    (p_rgba, w_rgba)
 }
 
 #[cfg(test)]
@@ -559,7 +471,7 @@ mod tests {
         assert_eq!(spirv_manifest().len(), 5);
         for (name, bytes) in [
             ("develop_stack.spv", DEVELOP_SPV),
-            ("clarity_dehaze.spv", CLARITY_DEHAZE_SPV),
+            ("box_blur.spv", BLUR_SPV),
             ("lut3d.spv", LUT3D_SPV),
             ("chromatic_aberration.spv", CA_SPV),
             ("scopes.spv", SCOPES_SPV),
@@ -584,22 +496,18 @@ mod tests {
                 [f * 0.8, f * 0.5 + 0.1, 1.0 - f * 0.7]
             })
             .collect();
-        let cd = run_clarity_dehaze(&src, w, h, 35.0, 25.0, 20.0).expect("clarity_dehaze kernel");
-        assert_eq!(cd.len(), src.len());
-
-        let mut lut = Vec::with_capacity(8 * 8 * 8);
-        for b in 0..8 {
-            for g in 0..8 {
-                for r in 0..8 {
-                    lut.push([r as f32 / 7.0, g as f32 / 7.0, b as f32 / 7.0]);
-                }
-            }
+        // the blur and the chromatic aberration give the CPU's numbers
+        let plane: Vec<f32> = src.iter().map(|p| p[1]).collect();
+        for r in [1usize, 3, 9] {
+            let gpu = box_blur(&plane, w as usize, h as usize, r).expect("blur kernel");
+            let cpu = crate::develop::box_blur_cpu(&plane, w as usize, h as usize, r);
+            let worst = gpu.iter().zip(&cpu).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(worst < 1e-5, "blur r {r}: off by {worst}");
         }
-        let l3d = run_lut3d(&src, w, h, &lut, 8, 1.0).expect("lut3d kernel");
-        assert_eq!(l3d.len(), src.len());
-
-        let ca = run_chromatic_aberration(&src, w, h, 15.0, -10.0, 0.5).expect("ca kernel");
-        assert_eq!(ca.len(), src.len());
+        let ca = lateral_ca(&src, w as usize, h as usize, 1.002, 0.998).expect("ca kernel");
+        let cpu = crate::develop::lateral_ca_cpu(&src, w as usize, h as usize, [1.002, 1.0, 0.998]);
+        let worst = ca.iter().zip(&cpu).flat_map(|(a, b)| (0..3).map(move |c| (a[c] - b[c]).abs())).fold(0.0f32, f32::max);
+        assert!(worst < 1e-5, "chromatic aberration off by {worst}");
 
         let mut rgba = vec![128u8; (w * h * 4) as usize];
         for (i, p) in src.iter().enumerate() {
@@ -611,5 +519,11 @@ mod tests {
         let (parade, wf) = run_scopes(&rgba, w, h, 48, 32).expect("scopes kernel");
         assert_eq!(parade.len(), 48 * 32 * 4);
         assert_eq!(wf.len(), 48 * 32 * 4);
+        // the GPU and the C++ fallback draw the same scopes (a float rounding may move a pixel a bin)
+        let (cp, cw) = crate::libraw::compute_scopes_cpu(&rgba, w as usize, h as usize, 48, 32);
+        let diff = |a: &[u8], b: &[u8]| a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as f64).sum::<f64>() / a.len() as f64;
+        assert!(diff(&parade, &cp) < 1.0 && diff(&wf, &cw) < 1.0, "parade {} waveform {}", diff(&parade, &cp), diff(&wf, &cw));
     }
 }
+
+

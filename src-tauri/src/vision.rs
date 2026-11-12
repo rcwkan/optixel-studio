@@ -55,11 +55,12 @@ pub struct Metrics {
     pub colors: Vec<String>,
     /// Perceptual (DCT) hash of the frame, 16 hex digits.
     pub phash: String,
-    /// Native C++ Tenengrad/Laplacian focus-peaking score (0-100) on the subject/eye region.
+    /// Native C++ focus-peaking score (0-100): over the eyes when there are faces, else the frame.
     pub focus_peaking_score: f32,
-    /// Subject eye openness (EAR proxy 0.0-1.0; < 0.22 indicates closed eyes / blink).
-    pub eye_openness: f32,
-    /// True when closed eyes (blink) are detected on a portrait/face subject.
+    /// The most closed face's eye aspect ratio (from its landmarks: about 0.3 open, under 0.2 shut); None
+    /// without faces or without the landmark model.
+    pub eye_openness: Option<f32>,
+    /// A face (from the face scan) with both eyes shut, by its landmarks. Never without faces.
     pub blink_detected: bool,
 }
 
@@ -293,7 +294,8 @@ pub fn noise_of(s: &Rgb) -> f32 {
 /// Measure a decoded photo. Sharpness is measured fitted inside `edge` (0: full size) and the blur judged
 /// as it looks with the long edge `judge` px (2048 for a screen, the photo's own size for 100%; 0: as
 /// measured). `subject` overrides the built-in subject box (e.g. the AI provider's).
-pub fn analyse(img: &DynamicImage, edge: u32, judge: u32, subject: Option<[f32; 4]>) -> Metrics {
+/// `eyes`: of each face in the photo (`faces::photo_eyes`), for eye focus and blinks.
+pub fn analyse(img: &DynamicImage, edge: u32, judge: u32, subject: Option<[f32; 4]>, eyes: &[[[f32; 2]; 2]]) -> Metrics {
     let detail = Rgb::from_image(img, edge);
     let (w, h) = (detail.w, detail.h);
     let small = detail.fit(512);
@@ -351,22 +353,21 @@ pub fn analyse(img: &DynamicImage, edge: u32, judge: u32, subject: Option<[f32; 
     };
     exposure(&small, &mut m);
     colours(&small, &mut m);
-    focus_and_blink(&small, sbox, &mut m);
+    focus_and_blink(&small, &detail, eyes, &mut m);
     m
 }
 
-/// Native C++ Focus-Peaking (Tenengrad + 8-neighbor Laplacian) and Eye-Aspect-Ratio (EAR) blink analysis.
-fn focus_and_blink(s: &Rgb, sbox: [f32; 4], m: &mut Metrics) {
+/// Native C++ focus peaking: the eyes' sharpness when the face scan found faces (on the larger `detail`
+/// copy, where a group's eyes are more than a few pixels), else the frame's. Closed eyes come from the
+/// faces' landmarks (`faces::eye_openness`), not from here.
+fn focus_and_blink(small: &Rgb, detail: &Rgb, eyes: &[[[f32; 2]; 2]], m: &mut Metrics) {
+    let s = if eyes.is_empty() { small } else { detail };
     if s.w < 8 || s.h < 8 {
         return;
     }
     let flat_rgb: Vec<f32> = s.px.iter().flat_map(|p| [p[0].clamp(0.0, 1.0), p[1].clamp(0.0, 1.0), p[2].clamp(0.0, 1.0)]).collect();
-    let (_mask, fp_score, eye_open, blink) = crate::libraw::focus_peaking_and_blink(&flat_rgb, s.w, s.h, 0.25, &[sbox]);
-    m.focus_peaking_score = fp_score;
-    m.eye_openness = eye_open;
-    // Flag a blink when the subject box contains warm skin/portrait tones and EAR drops below 0.22
-    let has_skin_tones = m.colors.iter().any(|c| c == "orange" || c == "red" || c == "brown" || c == "pink");
-    m.blink_detected = has_skin_tones && (blink || eye_open < 0.22) && m.edges >= 30;
+    let patches: Vec<[f32; 8]> = eyes.iter().map(|e| crate::faces::eye_patches(*e, s.w, s.h)).collect();
+    m.focus_peaking_score = crate::libraw::focus_peaking(&flat_rgb, s.w, s.h, 0.25, &patches).1;
 }
 
 /// Brightness percentiles, clipping and the exposure score, on the display values.
@@ -738,7 +739,12 @@ fn outline(m: &[bool], w: usize, h: usize, max: usize) -> Option<Vec<[f32; 2]>> 
         size[k as usize] += 1;
     }
     let best = (0..n).max_by_key(|&k| size[k])? as u32;
-    let ring = trace(&label.iter().map(|&k| k == best).collect::<Vec<_>>(), w, h);
+    ring(&label.iter().map(|&k| k == best).collect::<Vec<_>>(), w, h, max)
+}
+
+/// The boundary of the one region in `m`, simplified to at most `max` vertices (fractions of the frame).
+fn ring(m: &[bool], w: usize, h: usize, max: usize) -> Option<Vec<[f32; 2]>> {
+    let ring = trace(m, w, h);
     if ring.len() < 8 {
         return None;
     }
@@ -758,6 +764,33 @@ fn outline(m: &[bool], w: usize, h: usize, max: usize) -> Option<Vec<[f32; 2]>> 
     let at = |v: i32, n: usize| if v <= 0 { 0.0 } else if v as usize + 1 >= n { 1.0 } else { (v as f32 + 0.5) / n as f32 };
     let out: Vec<[f32; 2]> = poly.into_iter().map(|(x, y)| [at(x, w), at(y, h)]).collect();
     (out.len() >= 3).then_some(out)
+}
+
+/// Every part of `m` covering at least `min_frac` of the frame (largest first, at most `max_parts`) as an
+/// outline (`false`), then every hole in them that large (`true`: enclosed background, off the frame's
+/// edge), each simplified to `max` vertices (fractions of the frame). As mask components: parts add, holes
+/// subtract.
+pub(crate) fn regions(m: &[bool], w: usize, h: usize, max: usize, min_frac: f32, max_parts: usize) -> Vec<(bool, Vec<[f32; 2]>)> {
+    let min = (((w * h) as f32 * min_frac) as usize).max(8);
+    let mut out = vec![];
+    for hole in [false, true] {
+        let src: Vec<bool> = if hole { m.iter().map(|&v| !v).collect() } else { m.to_vec() };
+        let (label, n) = components(&src, w, h);
+        let (mut size, mut edge) = (vec![0usize; n], vec![false; n]);
+        for (i, &k) in label.iter().enumerate().filter(|(_, k)| **k != NONE) {
+            size[k as usize] += 1;
+            let (x, y) = (i % w, i / w);
+            edge[k as usize] |= x == 0 || y == 0 || x + 1 == w || y + 1 == h;
+        }
+        let mut keep: Vec<usize> = (0..n).filter(|&k| size[k] >= min && !(hole && edge[k])).collect();
+        keep.sort_by_key(|&k| std::cmp::Reverse(size[k]));
+        for k in keep.into_iter().take(max_parts) {
+            if let Some(r) = ring(&label.iter().map(|&l| l == k as u32).collect::<Vec<_>>(), w, h, max) {
+                out.push((hole, r));
+            }
+        }
+    }
+    out
 }
 
 /// Outline of the main subject (for an AI-free subject mask): colour against the border, centre and focus.
@@ -833,7 +866,7 @@ mod tests {
     fn edge_blur_reads_the_blur_radius() {
         let (w, h) = (640, 480);
         let sharp = leaves(w, h, 7);
-        let at = |v: &[f32]| analyse(&grey(v, w, h), 0, 0, Some([0.0, 0.0, 1.0, 1.0]));
+        let at = |v: &[f32]| analyse(&grey(v, w, h), 0, 0, Some([0.0, 0.0, 1.0, 1.0]), &[]);
         let m0 = at(&sharp);
         assert!(m0.sharpness > 90.0 && m0.blur_px < 0.8, "sharp: {m0:?}");
         // close edges (thin leaves) read a little low at large blur; the reading stays monotone
@@ -844,14 +877,14 @@ mod tests {
         }
         assert!(at(&gauss(&sharp, w, h, 2.0)).sharpness < 60.0);
         // measured at half size and judged at full size, σ 2 still reads about 2
-        let half = analyse(&grey(&gauss(&sharp, w, h, 2.0), w, h), 320, 640, Some([0.0, 0.0, 1.0, 1.0]));
+        let half = analyse(&grey(&gauss(&sharp, w, h, 2.0), w, h), 320, 640, Some([0.0, 0.0, 1.0, 1.0]), &[]);
         assert!((1.2..2.6).contains(&half.subject_blur_px) && half.subject_sharpness < 60.0, "{half:?}");
     }
 
     #[test]
     fn motion_blur_is_directional() {
         let (w, h) = (640, 480);
-        let m = analyse(&grey(&smear(&leaves(w, h, 3), w, h, 11), w, h), 0, 0, Some([0.0, 0.0, 1.0, 1.0]));
+        let m = analyse(&grey(&smear(&leaves(w, h, 3), w, h, 11), w, h), 0, 0, Some([0.0, 0.0, 1.0, 1.0]), &[]);
         assert!(m.motion > 0.4 && (m.motion_angle == 0.0 || m.motion_angle == 180.0), "{m:?}");
         assert!(m.subject_sharpness < 60.0, "a smeared frame passed as sharp: {m:?}");
     }
@@ -872,11 +905,11 @@ mod tests {
                 .collect();
             DynamicImage::ImageRgb8(image::RgbImage::from_raw(w as u32, h as u32, rgb).unwrap())
         };
-        let back_focus = analyse(&paint(&ground, &soft(&skin), &soft(&disc)), 0, 0, None);
+        let back_focus = analyse(&paint(&ground, &soft(&skin), &soft(&disc)), 0, 0, None, &[]);
         let b = back_focus.subject;
         assert!(b[0] < 0.36 && b[0] + b[2] > 0.64 && b[1] < 0.3 && b[1] + b[3] > 0.7 && b[2] < 0.6, "subject box {b:?}");
         assert!(back_focus.sharpness > 80.0 && back_focus.subject_sharpness < 40.0, "{back_focus:?}");
-        let portrait = analyse(&paint(&soft(&ground), &skin, &disc), 0, 0, None);
+        let portrait = analyse(&paint(&soft(&ground), &skin, &disc), 0, 0, None, &[]);
         assert!(portrait.sharpness > 80.0 && portrait.subject_sharpness > 80.0, "{portrait:?}");
     }
 
@@ -891,7 +924,7 @@ mod tests {
         let texture = leaves(w, h, 9);
         assert!(noise(&texture, w, h) < 0.004, "texture read as noise: {}", noise(&texture, w, h));
         // a frame blown out on its right third
-        let m = analyse(&grey(&(0..w * h).map(|i| if i % w > 266 { 1.0 } else { 0.4 }).collect::<Vec<_>>(), w, h), 0, 0, None);
+        let m = analyse(&grey(&(0..w * h).map(|i| if i % w > 266 { 1.0 } else { 0.4 }).collect::<Vec<_>>(), w, h), 0, 0, None, &[]);
         assert!((m.clipped_highlights - 33.0).abs() < 2.0 && m.exposure < 10.0, "{m:?}");
         assert!(m.colorfulness < 5.0 && m.colors.is_empty());
         // the same frame resized and brightened hashes close; another frame does not
@@ -902,6 +935,24 @@ mod tests {
         assert!(distance(&hash(&a), &hash(&b)) <= 6, "near copy: {}", distance(&hash(&a), &hash(&b)));
         assert!(distance(&hash(&a), &hash(&c)) >= 18, "different photo: {}", distance(&hash(&a), &hash(&c)));
         assert_eq!(distance("zz", &hash(&a)), 64);
+    }
+
+    /// A ring traces as one part (to add) and one hole (to subtract) in the middle; a speck under the minimum
+    /// area is left out.
+    #[test]
+    fn regions_trace_parts_and_holes() {
+        let (w, h) = (64usize, 48usize);
+        let m: Vec<bool> = (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as f32 - 32.0, (i / w) as f32 - 24.0);
+                (8.0..18.0).contains(&x.hypot(y)) || (i % w == 2 && i / w == 2)
+            })
+            .collect();
+        let r = regions(&m, w, h, 64, 0.01, 12);
+        assert_eq!((r.iter().filter(|p| !p.0).count(), r.iter().filter(|p| p.0).count()), (1, 1), "{r:?}");
+        let hole = &r.iter().find(|p| p.0).unwrap().1;
+        let c = hole.iter().fold([0.0f32; 2], |a, p| [a[0] + p[0], a[1] + p[1]]).map(|v| v / hole.len() as f32);
+        assert!((c[0] - 0.5).abs() < 0.05 && (c[1] - 0.5).abs() < 0.05, "{c:?}");
     }
 
     #[test]

@@ -17,7 +17,7 @@ const field = "w-full rounded bg-neutral-800 px-2 py-1 font-mono text-[11px] out
 
 export function Agent({ info, settings, setSettings, logs, clearLogs }: { info: AppInfo | null; settings: Settings | null; setSettings: (s: Settings) => void; logs: Log[]; clearLogs: () => void }) {
   const [reveal, setReveal] = useState(false);
-  const [client, setClient] = useState<"code" | "desktop" | "json">("code");
+  const [client, setClient] = useState<"code" | "antigravity" | "desktop" | "json">("code");
   const [sel, setSel] = useState(0);
   const [key, setKey] = useState("");
   const [note, setNote] = useState("");
@@ -33,6 +33,7 @@ export function Agent({ info, settings, setSettings, logs, clearLogs }: { info: 
   const token = settings.mcp_token;
   const snippets = {
     code: `claude mcp add --transport http optixel ${url} --header "Authorization: Bearer ${token}"`,
+    antigravity: `antigravity mcp add --header "Authorization: Bearer ${token}" optixel ${url}`,
     desktop: JSON.stringify({ mcpServers: { optixel: { command: info.exe ?? "optixel-studio", args: ["--mcp-stdio"] } } }, null, 2),
     json: JSON.stringify({ mcpServers: { optixel: { type: "http", url, headers: { Authorization: `Bearer ${token}` } } } }, null, 2),
   };
@@ -80,7 +81,7 @@ export function Agent({ info, settings, setSettings, logs, clearLogs }: { info: 
 
         <section className={card}>
           <h2 className="mb-3 font-semibold">Connect an agent</h2>
-          <Seg options={[["code", "Claude Code"], ["desktop", "Claude Desktop (stdio)"], ["json", "Generic HTTP"]]} value={client} onChange={setClient} />
+          <Seg options={[["code", "Claude Code"], ["antigravity", "Antigravity CLI"], ["desktop", "Claude Desktop (stdio)"], ["json", "Generic HTTP"]]} value={client} onChange={setClient} />
           <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap break-all rounded bg-neutral-950 p-3 font-mono text-[11px] text-neutral-300 select-text">{reveal ? snippets[client] : snippets[client].replaceAll(token, "<token>")}</pre>
           <Btn className="mt-2" onClick={() => navigator.clipboard.writeText(snippets[client])}>
             Copy with token
