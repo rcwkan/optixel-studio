@@ -22,9 +22,10 @@ Optixel Studio is a modern, local-first RAW photo editor and library organizer d
 * 🔒 **Zero Lock-In & Local-First**: Your RAW files stay right where they are. Edits are stored in non-destructive `.olxmp` sidecars, standard Adobe `.xmp` sidecars, and a local SQLite catalog. No mandatory subscriptions, no vendor lock-in.
 * 📷 **Native C/C++ Studio RAW Engine (LibRaw & LittleCMS2)**: Professional decoding for Canon CR3, Nikon HE .NEF, Sony .ARW, and Fujifilm X-Trans sensors with multi-algorithm demosaicing (AMaZE, RCD, LMMSE), sensor optical black-level calibration, multi-channel highlight reconstruction, and 32-bit floating-point ProPhoto RGB / ACEScg color management.
 * 🌐 **Connect All Your Photos in One Place**: Browse local folders, NAS/network shares (SMB, NFS, WebDAV), self-hosted **Immich** servers, Google Photos picks, and cloud storage (Amazon S3, Backblaze B2, Cloudflare R2, Nextcloud, Dropbox, OneDrive).
+* 🗺️ **Multi-Modal Catalog Intelligence (Grid, Date, Map & Gear)**: Fast photo discovery across multi-column thumbnail Grid (<kbd>G</kbd>), chronological timeline By Date (<kbd>D</kbd>), interactive OpenStreetMap By Location (<kbd>L</kbd>) with ~25km cluster pins & GPS EXIF scanning, gear breakdown By Camera body & lens (<kbd>K</kbd>), and on-device **ArcFace** biometric face clustering and People search.
 * 🎨 **Ahead-of-Time (AOT) GPU Compute Shaders**: High-performance pre-compiled SPIR-V binary kernels for Local Clarity, Dark-Channel Dehaze, 3D LUT trilinear interpolation, axial defringing, and real-time RGB Parade & Waveform scopes.
 * 🔍 **Lossless SIMD JPEG, Active AF Point Overlay & Soft-Proofing**: Lossless JPEG transforms with libjpeg-turbo without DCT recompression; proprietary MakerNotes active autofocus point overlay (<kbd>A</kbd>); interactive printer soft-proofing with custom `.icc` paper profiles and neon out-of-gamut warnings.
-* 🧠 **In-Place AI Retouching & Neural Denoise**: Paint away objects with generative fill (Stable Diffusion 1.5, LaMa) and clean noise with NAFNet/SCUNet. Non-destructive adjustment layers that never create bloated duplicate master files.
+* 🧠 **On-Device AI Models & SAM 2.1 Click-to-Select**: Point-and-click object segmentation with **SAM 2.1**; neural horizon and vertical alignment with **PerspectiveFields**; paint away distractions with **Moebius 0.2B**, **Stable Diffusion 1.5**, or **LaMa**; and clean sensor noise with **NAFNet** / **SCUNet**. Non-destructive in-place adjustment layers with zero duplicate files.
 * 🤖 **AI You Can Talk To**: A built-in Model Context Protocol (MCP) server allows external AI agents (Claude, Antigravity, local Ollama, LM Studio) to inspect histograms, trace precision masks, and execute photo editing workflows naturally.
 
 ---
@@ -43,25 +44,20 @@ Pre-built beta release packages are available for direct download from the [GitH
 
 ### 🔐 Package Integrity & Checksums
 
-Every GitHub release includes a canonical [`SHA256SUMS.txt`](https://github.com/rcwkan/optixel-studio/releases/latest) file to verify package authenticity:
+Every GitHub release includes a canonical [`SHA256SUMS.txt`](https://github.com/rcwkan/optixel-studio/releases/latest) file alongside Minisign signatures to verify package authenticity:
 
 ```bash
 # macOS
-shasum -a 256 Optixel.Studio_0.2.1_aarch64.dmg
+shasum -a 256 Optixel.Studio_0.3.0_aarch64.dmg
 
 # Linux
 sha256sum -c SHA256SUMS.txt
 
 # Windows (PowerShell)
-Get-FileHash .\Optixel.Studio_0.2.1_x64-setup.exe -Algorithm SHA256
+Get-FileHash .\Optixel.Studio_0.3.0_x64-setup.exe -Algorithm SHA256
 ```
 
-| Latest Package (v0.2.1) | SHA-256 Checksum |
-| :--- | :--- |
-| `Optixel.Studio_0.2.1_aarch64.dmg` | `a8772dedefedf8c688d3cc81b44335a23f1d4fe7d19da4a8c511851852e45b91` |
-| `Optixel.Studio_0.2.1_x64-setup.exe` | `61a86a3af545f81088365f17e54ef46603687e7b0ea35b208c37ca7d542fab60` |
-| `Optixel.Studio_0.2.1_x64_en-US.msi` | `d3ded66a77324a9f6e33599f438d3b984f5677ede44239f079c40d3f0652fdff` |
-| `Optixel.Studio_aarch64.app.tar.gz` | `875600356ec44c3e3d94ce692b8b78cde2dd2b73e7fb3a9d0120e970f58e5d43` |
+Official SHA-256 release checksums for all production builds are published in [`SHA256SUMS.txt`](https://github.com/rcwkan/optixel-studio/releases/latest) with each release tag. Verify downloaded installers against the signed release manifest before installing.
 
 ### 🍎 Installing on macOS
 
@@ -83,12 +79,19 @@ Intel Macs are not supported: the AI engine (ONNX Runtime + CoreML) ships for Ap
 
 ## 📖 User Guide & Key Features
 
-### 1. Library & Photo Viewer
-- **Zero-Import Browsing**: Add folders directly via **＋ › Folder…**. Files remain in their original directories; new images dropped into folders are picked up automatically.
-- **Grid & Full Photo Viewer**:
-  - Press <kbd>G</kbd> for the multi-column thumbnail grid with ratings, flags, and color labels.
-  - Press <kbd>V</kbd> or <kbd>Enter</kbd> (or double-click) to open the high-resolution **Photo Viewer** with smooth pan, 100% pixel zoom, slideshow mode, and filmstrip navigation.
-- **Fast Culling**: Rate photos with <kbd>0</kbd>–<kbd>5</kbd>, flag picks (<kbd>P</kbd>), unflag (<kbd>U</kbd>), or mark rejects (<kbd>X</kbd>).
+### 1. Library, Multi-Modal Views & People Management
+- **Zero-Import Browsing**: Add folders directly via **＋ › Folder…**. Files remain in their original directories; new images dropped into folders are picked up automatically without importing into proprietary vaults.
+- **Five Dedicated Library Views**:
+  - **Grid View (<kbd>G</kbd>)**: High-performance multi-column thumbnail grid with ratings (<kbd>0</kbd>–<kbd>5</kbd>), flags (<kbd>P</kbd>, <kbd>X</kbd>, <kbd>U</kbd>), color labels, and adjustable thumbnail scaling (120px–320px).
+  - **By Date Timeline (<kbd>D</kbd>)**: Chronological grouping by Year, Month, or Day. Collapsible date sections, quick-jump year pills, dated photo count badges, and single-click group selection.
+  - **By Location Map (<kbd>L</kbd>)**: Interactive OpenStreetMap map view with pan, zoom, fit-to-bounds, and geographic clustering (~25km radius) with thumbnail previews and badge counts. Toggle Geotagged vs. Untagged photos and run on-demand GPS EXIF scan (`scan_missing_gps`).
+  - **By Camera Equipment (<kbd>K</kbd>)**: Group photos by camera model, lens metadata, and ISO sensitivity tiers (<400 low noise, 400–1600 standard, 1600+ high sensitivity). Summary cards with photo counts, date ranges, lens breakdowns, and sample filmstrips.
+  - **Photo Viewer (<kbd>V</kbd> or <kbd>Enter</kbd>)**: High-resolution viewer with smooth pan, 100% pixel zoom, slideshow mode, and filmstrip navigation. Press <kbd>Esc</kbd> or <kbd>G</kbd> to return to grid.
+- **Biometric People Manager & Face Search** (*Library › People*):
+  - On-device **YOLOFace** face detector and **ArcFace w600k** face recognizer.
+  - Automatically clusters detected faces into distinct people profiles, allows naming individuals, merging duplicate profiles, and filtering the entire catalog by person or combinations of people.
+  - Interactive face timeline displaying the chronological frequency of each person across shoot years.
+- **Fast Keyboard Culling**: Rate photos with <kbd>0</kbd>–<kbd>5</kbd>, flag picks (<kbd>P</kbd>), unflag (<kbd>U</kbd>), or mark rejects (<kbd>X</kbd>). Filtering toolbar by rating, pick status, color labels, aspect ratio, and edit status.
 
 ### 2. Multi-Source DAM: Drives, Clouds & Immich
 - **Network Drives (NAS)**: Mount SMB (`smb://nas.local/photos`), AFP, NFS, or WebDAV shares. Optixel displays connection health and edits photos in place across your network.
@@ -146,43 +149,81 @@ Optixel Studio integrates production-grade C/C++ native libraries directly into 
 * **Pre-Compiled Binary Compute Kernels**: Compute shaders for Local Clarity/Texture/Dehaze (dark channel prior + bilateral-style edge-preserving contrast), 3D LUT trilinear interpolation, Chromatic Aberration lateral and axial defringing, and Real-Time RGB Parade / Waveform Scopes.
 * **Build-Time SPIR-V Optimization**: Shaders in `src-tauri/shaders/*.wgsl` are validated, stripped of debug symbols, and compiled into binary `.spv` bytecode embedded directly into the executable at build time.
 
-### 5. AI Retouching & Neural Denoise (The AI Tab)
-Optixel Studio delivers deep-learning generative retouching and denoising directly inside the Develop workspace:
-- **Generative AI Object Removal**:
-  - Paint over unwanted distractions or people with the smart brush. The mask automatically snaps to edges.
-  - Fine-tune brush size and outline dilation (`Grow edge (px)`).
-  - Optionally specify what should fill the gap (e.g. *"green grass, mountain rocks, clear sky"*).
-  - **Neural Backends**:
-    - **Stable Diffusion 1.5 Inpainting**: Generative diffusion fill that synthesizes plausible background content from text descriptions or context.
-    - **Moebius (RemovalModel)**: Lightweight 0.2B diffusion inpainting model with learned embedding conditioning for seamless object removal and realistic texture synthesis without needing text descriptions.
-    - **LaMa**: High-speed, resolution-robust texture continuation.
-  - **Live Progress & Cancellation**: Real-time progress bar displaying execution phase, completed steps, elapsed time, estimated completion time (ETA), and one-click cancel.
-- **Neural AI Denoise**:
-  - Tame high-ISO sensor noise and grain without softening fine hair, textures, or crisp subject contours.
-  - Powered by local **NAFNet** (fast, gentle smartphone/camera denoise) and **SCUNet** (clean & sharp blind denoising) with an adjustable **Strength** slider (0–100).
-- **In-Place Adjustment Layers & Zero-Duplicate Architecture**:
-  - Traditional editors (like Adobe Lightroom) generate massive duplicate `.dng` or `.tiff` files on disk every time you denoise or remove an object, doubling or tripling catalog storage.
-  - Optixel Studio treats AI operations as **in-place non-destructive adjustment layers**: parameters reside in `.olxmp` sidecar metadata, and rendered patches are stored in a dedicated local application cache. Your master RAW photos are never duplicated or overwritten.
-  - **Granular History Management**: Remove individual adjustment steps at any time via the red **✕** button on each history row, or undo/redo at full fidelity.
-  - **Storage & Relocation Management** (*Settings › Storage*): Interactive library storage breakdown, cache metrics, one-click cleanup, and full storage folder relocation (move catalog database, thumbnails, AI models, and caches to any internal or external drive with confirmation and seamless zero-restart engine switching).
-- **Creative Profile Strength**:
-  - All 18 creative and film profiles (Natural, Neutral, Vivid, Portrait, Landscape, B&W, Film, Moody, Street, Food, Architecture, Night, Nature, Teal & Orange, Editorial, Dark Moody, 35mm Film, Fine-Art B&W) include a real-time **Strength** slider (0% to 200%, default 100%).
-  - Smoothly scales tone curves, HSL color mixer channels, 3-way color grading, and presence adjustments. Double-click the slider to reset to 100%.
+### 5. On-Device AI Suite, Neural Models & Segmentation (AI & Masks Tabs)
+Optixel Studio delivers production-grade on-device neural inference directly inside the Develop and Library workspaces, running locally with zero cloud subscriptions, zero network latency, and complete privacy:
 
-### 5. Optics & Perspective (Geometry and Detail tabs)
+#### A. Segment Anything (SAM 2.1 & SAM 3) — Click-to-Select Object Masks
+- **Interactive Object Selection (<kbd>S</kbd>)**: Click any object in your photo (person, apparel, vehicle, building, sky, animal) to generate a pixel-precise, edge-snapped mask in under a second. Hold <kbd>⌥</kbd>/<kbd>Alt</kbd> and click to subtract regions from the selection.
+- **Local Neural Engines**:
+  - **SAM 2.1 Hiera-Tiny**: Meta's ultra-fast hierarchical vision transformer encoder. Runs smoothly on every click with minimal memory overhead.
+  - **SAM 2.1 Hiera-Small**: Larger image encoder yielding pristine boundary fidelity along complex hair strands, tree branches, and transparent edges.
+  - **SAM 3 & EfficientSAM3 (Concept Selection)**: Type what to select in natural language (e.g., *"red umbrella"*, *"mountain ridge"*, *"vintage car"*) and the neural model isolates every matching instance automatically.
+
+#### B. PerspectiveFields — Neural Horizon & Vertical Alignment
+- **ParamNet Camera Calibration & Gravity Fields**: Replaces brittle edge heuristics with deep perceptual surface normal and gravity field estimation (~0.1°–0.5° precision; CVPR 2023).
+- **Specialized Weights**:
+  - **GSV Model**: Trained on Google Street View; excels at architectural facades, urban street scenes, and converging skyscraper lines.
+  - **EDINA / 360Cities Model**: Trained on diverse 360° panoramas; optimized for interior living spaces, horizon coastlines, and rolling landscapes.
+- **One-Click Execution**: Apply horizontal auto-leveling or vertical perspective straightening as discrete, fully undoable history steps.
+
+#### C. Generative AI Object Removal & Inpainting
+- **Smart Brush & Edge Dilation**: Paint over unwanted distractions, power lines, or tourists with an edge-snapping brush and customizable dilation (`Grow edge (px)`).
+- **Neural Backends**:
+  - **Moebius (RemovalModel)**: Lightweight 0.2B inpainting diffusion model with learned embedding conditioning for realistic texture synthesis and seamless object removal without text prompts.
+  - **Stable Diffusion 1.5 Inpainting**: Full generative diffusion model synthesizing context-aware fills from scratch with optional text guidance (*"clean cobblestone, morning light"*).
+  - **LaMa**: High-speed Fourier convolution texture continuation for fast, crisp fills across large missing regions.
+- **Live Progress & Cancellation**: Real-time progress bar displaying execution phase, completed diffusion steps, elapsed time, estimated completion time (ETA), and one-click cancel.
+
+#### D. Neural AI Denoise
+- **Clean High-ISO RAW Noise**: Eliminate sensor grain and chromatic blotches without smudging fine micro-contrast, fabric textures, or eyelashes.
+- **Models**: Local **SCUNet** (clean & sharp blind denoising for real sensor noise) and **NAFNet** (lightweight half-precision denoising) with an interactive **Strength** slider (0–100%).
+
+#### E. Biometric Face Recognition, Landmarks & Face Swap
+- **People Manager (ArcFace w600k + YOLOFace)**: Automatically scans your library, detects faces, extracts deep biometric embeddings, and groups individuals into named people profiles with cross-shoot search.
+- **Eye Landmarks & Blink Detection (2DFAN4)**: 68-point facial landmark regression measuring eyelid openness. Used by automated culling to flag and reject closed-eye frames in portrait bursts.
+- **Face Swap (HyperSwap 1A)**: High-fidelity identity transfer preserving head pose, lighting conditions, and facial expressions.
+
+#### F. Supported On-Device Neural Models Matrix
+All models can be downloaded on-demand and configured under **Settings › AI models**:
+
+| Model ID | Category | Architecture / Source | VRAM / RAM | Target Hardware & Acceleration |
+| :--- | :--- | :--- | :--- | :--- |
+| `sam2.1-hiera-tiny` | Segmentation | Meta SAM 2.1 Hiera-Tiny (ONNX) | ~1 GB | Apple Silicon (CoreML) / DirectML / CPU |
+| `sam2.1-hiera-small` | Segmentation | Meta SAM 2.1 Hiera-Small (ONNX) | ~1.5 GB | Apple Silicon (CoreML) / DirectML / CPU |
+| `sam3-fp16` | Concept Select | Meta SAM 3 + CLIP ViT-B (ONNX) | ~4 GB | High-memory GPU / Apple Silicon |
+| `sam3-tiny` | Concept Select | EfficientSAM3 distilled (PIXL) | ~1 GB | Apple Silicon / CPU / DirectML |
+| `perspective-fields-gsv` | Alignment | ParamNet GSV (SegFormer-B3 + ConvNeXt) | ~1 GB | GPU / Apple Silicon / CPU |
+| `perspective-fields-edina` | Alignment | ParamNet EDINA (360Cities) | ~1 GB | GPU / Apple Silicon / CPU |
+| `moebius` | Inpainting | 0.2B Diffusion Inpainter (HUST/SimonW) | ~2.5 GB | Apple Silicon / Discrete GPU / DirectML |
+| `lama-big` | Inpainting | Fast Fourier Convolutions (LaMa) | ~2 GB | CPU / Apple Silicon |
+| `sd15-inpaint` | Generative Fill | Stable Diffusion 1.5 Inpaint FP16 | ~4 GB | Discrete GPU / Apple Silicon (CoreML) |
+| `scunet-real-psnr` | Denoise | SCUNet Real-World Clean (Zhang et al.) | ~3 GB | GPU / Apple Silicon / CPU |
+| `scunet-real-gan` | Denoise | SCUNet Real-World Sharp (Zhang et al.) | ~3 GB | GPU / Apple Silicon / CPU |
+| `nafnet-sidd-w32-fp16` | Denoise | NAFNet Fast FP16 (Megvii) | ~1.5 GB | GPU / Apple Silicon / CPU |
+| `arcface-faces` | People / Face | YOLOFace + ArcFace w600k | ~500 MB | CPU / Apple Silicon |
+| `face-landmarks-2dfan4`| Eye Landmarks | 2DFAN4 68-Landmark Net | ~300 MB | CPU / Apple Silicon |
+| `hyperswap-1a` | Face Swap | HyperSwap 1A (FaceFusion 3.3) | ~1 GB | CPU / Apple Silicon |
+
+#### G. In-Place Adjustment Layers & Zero-Duplicate Architecture
+- Traditional editors generate massive duplicate `.dng` or `.tiff` files on disk (200MB+ each) every time an AI denoise or removal is performed, quickly exhausting storage drives.
+- Optixel Studio treats neural operations as **non-destructive in-place adjustment layers**: edit parameters reside in `.olxmp` metadata sidecars, and rendered patches are stored in a dedicated application cache. Master RAW photos remain untouched and zero duplicate masters are created.
+- **Granular History Management**: Delete individual adjustment layers at any time via the red **✕** icon on each history step, or undo/redo at full 32-bit floating-point fidelity.
+
+### 6. Optics & Perspective (Geometry and Detail tabs)
 - **Lens Corrections**: Distortion, lateral chromatic aberration (auto-measured along contrast edges), defringe, and vignetting.
 - **Upright Perspective Solver**: Automatically solve camera pitch, roll, and yaw using Hough transform line detection (**Auto**, **Level**, **Vertical**, **Full**, or **Guided** with 2–4 lines).
 - **Constrain Crop**: Automatically shrink crop boundaries to prevent transparent edges after perspective corrections.
 - **Film Grain & Camera Calibration**: Fine-grained analog film grain and sensor calibration adjustments.
 
-### 6. Photoshop Tools
-Photoshop-style adjustments applied non-destructively on top of RAW develop, grouped with their kind (Adjust, Color, Detail):
+### 7. Creative Color & Photoshop Tools (Color and Pro tabs)
+Photoshop-style adjustments applied non-destructively on top of RAW develop:
+- **16 Photo Grading Styles**: Instant professional looks (Bleach Bypass, Portra, Velvia, Nordic Noir, Teal & Orange variants, etc.) with real-time **0–200% Strength** scaling.
 - **Levels**: Per-channel RGB black, gamma, and white points with auto 0.1% clipping.
 - **Selective Color**: Adjust CMYK ink balances across 9 color ranges (reds, yellows, greens, cyans, blues, magentas, whites, neutrals, blacks).
 - **Channel Mixer & Gradient Maps**: Custom monochrome channel blends and dual-tone gradient maps.
 - **Filters**: Gaussian blur, image invert, posterize, and threshold.
 
-### 7. Automated Functions & Background Batch Jobs
+### 8. Automated Functions & Background Batch Jobs
 Open the **Auto** bar on the right side of the Library to run background batch operations:
 - **Auto Catalog & Culling**: Measures edge-width subject sharpness, highlights/shadows clipping, and noise; automatically detects bursts, selects the sharpest frame, and tags rejects.
 - **Auto Horizon Levelling**: Detects tilted horizons and levels images as dedicated history steps.
@@ -282,15 +323,19 @@ optixel-studio --mcp-stdio
 ```
 ├── src/                     # React 19 Frontend
 │   ├── App.tsx              # App shell, navigation, global hotkeys
-│   ├── Library.tsx          # Digital asset management & grid
+│   ├── Library.tsx          # Digital asset management & view orchestrator
+│   ├── DateView.tsx         # Chronological timeline view (Year/Month/Day)
+│   ├── LocationView.tsx     # OpenStreetMap map view & GPS cluster pins
+│   ├── CameraView.tsx       # Equipment breakdown by camera body, lens, and ISO
+│   ├── People.tsx           # Biometric face clustering & person search
 │   ├── PhotoViewer.tsx      # Full-screen photo viewer, zoom, filmstrip
-│   ├── Develop.tsx          # RAW develop workspace & histogram
+│   ├── Develop.tsx          # RAW develop workspace & 8-tab tool container
 │   ├── AiDenoise.tsx        # AI object removal, neural denoise & progress
-│   ├── Advanced.tsx         # Whole-photo panels: lens, Upright, calibration, grain, spots, proofing
+│   ├── Advanced.tsx         # Optics, Upright, calibration, grain, spots, proofing
 │   ├── Pro.tsx              # Levels, HDR tab, hue/sat, selective color, Photoshop tools
-│   ├── Auto.tsx             # 15 photo styles, strength slider, auto fine tune & auto rotate
+│   ├── Auto.tsx             # 16 photo styles, strength slider, auto fine tune & auto rotate
 │   ├── AutoView.tsx         # Batch auto culling & processing jobs
-│   ├── Storage.tsx          # Cloud storage, network drives, clean up
+│   ├── Storage.tsx          # Cloud storage, network drives, clean up & duplicate
 │   └── Agent.tsx            # AI provider router & MCP token settings
 ├── src-tauri/               # Rust Core Backend & Native C/C++ Engine
 │   ├── csrc/                # Native C/C++ implementations (ol_raw.cpp, ol_demosaic.cpp, ol_codecs.cpp)
@@ -301,8 +346,12 @@ optixel-studio --mcp-stdio
 │   ├── src/icc.rs           # LittleCMS 2 color management, ProPhoto/ACEScg, soft-proofing
 │   ├── src/gpu.rs           # wgpu AOT SPIR-V compute pipeline (clarity, dehaze, lut3d, scopes)
 │   ├── src/xmp.rs           # Bidirectional Adobe Lightroom .XMP sidecar sync
-│   ├── src/aimodel.rs       # ONNX Runtime, NAFNet, SCUNet & SD inpainting
-│   ├── src/catalog.rs       # SQLite schema, EXIF, .olxmp sidecars
+│   ├── src/aimodel.rs       # ONNX Runtime, SAM 2.1, PerspectiveFields, Moebius, NAFNet, SCUNet
+│   ├── src/segment.rs       # Segment Anything 2.1 mask generation & point tracking
+│   ├── src/perspective.rs   # PerspectiveFields PyTorch/ONNX inference & angle estimation
+│   ├── src/faces.rs         # YOLOFace + ArcFace w600k face detection & recognition
+│   ├── src/faceswap.rs      # HyperSwap 1A face swap & landmark alignment
+│   ├── src/catalog.rs       # SQLite schema, EXIF GPS parsing, .olxmp sidecars
 │   ├── src/vision.rs        # Focus peaking, active AF point detection, blur & noise analysis
 │   ├── src/auto.rs          # Auto culling, rating & batch functions
 │   ├── src/mcp.rs           # Embedded HTTP & stdio MCP server
@@ -310,7 +359,7 @@ optixel-studio --mcp-stdio
 │   ├── src/remote.rs        # Immich integration & Google Photos picker
 │   └── src/ai.rs            # AI agent router & command execution
 ├── html/                    # Marketing landing page & static site
-├── cloudflare-worker/       # Cloudflare edge proxy & router
+├── cloudflare-updater-worker/ # Cloudflare update manifest worker & download proxy
 ├── guide/                   # In-depth architectural & developer guides
 └── scripts/                 # Build, test, run, and deployment scripts
 ```
@@ -330,9 +379,14 @@ Optixel Studio allows optional, on-demand downloading of third-party neural netw
 
 | Model | Purpose | Author / Lab | License | Terms & Disclaimer |
 | :--- | :--- | :--- | :--- | :--- |
-| **PerspectiveFields** | Auto Horizon & Vertical Alignment | Jin et al. (University of Michigan / CVPR 2023) | MIT License | Permissive open-source license ([jinlinyi/PerspectiveFields](https://github.com/jinlinyi/PerspectiveFields)). |
-| **Stable Diffusion 1.5 Inpainting** | Generative Fill | RunwayML / Stability AI | CreativeML OpenRAIL-M | Subject to OpenRAIL-M use-based restrictions. |
+| **SAM 2.1 (Hiera-Tiny / Small)** | Click-to-Select Object Segmentation | Meta AI / onnx-community | Apache-2.0 | Permissive open-source license ([facebookresearch/sam2](https://github.com/facebookresearch/sam2)). |
+| **SAM 3 / EfficientSAM3** | Select by Name Concept Segmentation | Meta AI / Zeng et al. / PIXL | SAM License | Subject to Meta's SAM research terms and trade controls. |
+| **PerspectiveFields (GSV & EDINA)** | Auto Horizon & Vertical Alignment | Jin et al. (University of Michigan / CVPR 2023) | MIT License | Permissive open-source license ([jinlinyi/PerspectiveFields](https://github.com/jinlinyi/PerspectiveFields)). |
 | **Moebius (RemovalModel)** | Inpainting & Object Removal | Duan & Xu et al. (HUST) / SimonW | Apache-2.0 | Permissive open-source license. |
+| **Stable Diffusion 1.5 Inpainting** | Generative Fill | RunwayML / Stability AI | CreativeML OpenRAIL-M | Subject to OpenRAIL-M use-based restrictions. |
 | **LaMa** | Inpainting & Object Removal | Suvorov et al. (Samsung Research) | Apache-2.0 | Permissive open-source license. |
-| **NAFNet** | Fast Neural Denoise | Megvii Technology | MIT License | Permissive open-source license. |
 | **SCUNet** | Real-World Camera Denoise | Zhang et al. | Apache-2.0 | Permissive open-source license. |
+| **NAFNet** | Fast Neural Denoise | Megvii Technology | MIT License | Permissive open-source license. |
+| **YOLOFace + ArcFace w600k** | Biometric Face Detection & Recognition | InsightFace / FaceFusion | Non-Commercial Research | Research license; check terms for commercial deployments. |
+| **2DFAN4** | 68-Point Eye Landmark Tracking | Bulat & Tzimiropoulos | Research License | Non-commercial research use. |
+| **HyperSwap 1A** | Neural Face Swap | FaceFusion | Research License | Check FaceFusion's terms before commercial use. |
