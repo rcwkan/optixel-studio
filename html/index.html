@@ -671,14 +671,14 @@ footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
 <!-- HERO -->
 <header class="hero" id="top">
   <div class="wrap">
-    <span class="pill reveal"><span class="dot"></span>Open source · MIT · v0.1</span>
+    <span class="pill reveal"><span class="dot"></span>Open source · MIT · v0.3.0</span>
     <h1 class="reveal">The RAW editor your <span class="grad">AI agent</span> can drive.</h1>
     <p class="lead reveal">Optixel Studio is a non-destructive RAW processor and photo catalog with a built-in MCP server. Edit by hand, ask in plain words, or let Claude cull and grade a whole shoot — every change stays undoable.</p>
     <div class="cta reveal">
       <a class="btn primary" href="https://github.com/rcwkan/optixel-studio/releases">⬇ Download for macOS · Windows · Linux</a>
       <a class="btn" href="#demos">Try the demos ↓</a>
     </div>
-    <p class="stack reveal">Tauri v2 · Rust · React 19 · SQLite · rawler</p>
+    <p class="stack reveal">Tauri v2 · Rust · LibRaw C++ · LittleCMS 2 · wgpu SPIR-V · React 19 · SQLite</p>
 
     <div class="shot reveal">
       <div class="win" role="img" aria-label="Optixel Studio Develop view with the AI prompt bar">
@@ -692,6 +692,10 @@ footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
             <h6>Library</h6>
             <div>All photos <small>2,418</small></div>
             <div>Picks <small>312</small></div>
+            <div>📅 By Date</div>
+            <div>📍 By Location</div>
+            <div>📷 By Camera</div>
+            <div>👤 People</div>
             <h6>Folders</h6>
             <div class="on">Iceland 2026 <small>486</small></div>
             <div class="conn">NAS · photos <small>1,204</small></div>
@@ -706,7 +710,7 @@ footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
             <div class="ai"><b>✦ AI</b><span class="typed" id="heroTyped"></span><span class="go">Run</span></div>
           </div>
           <div class="panel">
-            <div class="ptabs"><span class="on">Adjust</span><span>Advanced</span><span>Pro</span><span style="color:var(--violet)">AI</span><span>Auto</span></div>
+            <div class="ptabs"><span class="on">Adjust</span><span>Color</span><span>Detail</span><span>HDR</span><span>Geometry</span><span>Masks</span><span>Auto</span><span style="color:var(--violet)">AI</span></div>
             <div class="hist"><svg width="100%" height="100%"><use href="#hist"/></svg></div>
             <h6>Basic</h6>
             <div class="sl">Temp<div class="tr"><i style="left:58%"></i></div><em>+12</em></div>
@@ -764,10 +768,21 @@ footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
         <p>No import step. Add a folder, a network share or a cloud account and browse it in place. Immich albums page in 250 at a time; ratings and flags sync both ways. <b>Duplicate</b> copies between any two sources with SHA-256 verification.</p>
         <ul><li>Folders</li><li>SMB · AFP · NFS · WebDAV</li><li>S3 · B2 · R2 · Wasabi · MinIO</li><li>Dropbox</li><li>OneDrive</li><li>Immich</li><li>Google Photos</li></ul>
       </article>
+      <article class="fcard wide reveal" style="--glow:rgba(37,198,216,.2)">
+        <div class="ic">🗺️</div>
+        <h3>Multi-Modal Library: Date, Map &amp; Gear</h3>
+        <p>Five specialized browsing modes: high-density Grid (<kbd>G</kbd>), chronological timeline By Date (<kbd>D</kbd>) with collapsible year/month groups, interactive OpenStreetMap By Location (<kbd>L</kbd>) with ~25km cluster pins &amp; GPS EXIF scanner, gear breakdown By Camera (<kbd>K</kbd>), and high-resolution Photo Viewer (<kbd>V</kbd>).</p>
+        <ul><li>Grid (<kbd>G</kbd>)</li><li>By Date (<kbd>D</kbd>)</li><li>By Location Map (<kbd>L</kbd>)</li><li>By Camera (<kbd>K</kbd>)</li><li>Viewer (<kbd>V</kbd>)</li><li>People (<kbd>ArcFace</kbd>)</li></ul>
+      </article>
+      <article class="fcard reveal" style="--glow:rgba(167,139,250,.2)">
+        <div class="ic">👤</div>
+        <h3>ArcFace People &amp; Face Search</h3>
+        <p>On-device biometric face detection with YOLOFace and deep identity embedding with <b>ArcFace w600k</b>. Cluster faces into named people profiles, merge duplicate identities, search your library by person, and inspect capture timelines.</p>
+      </article>
       <article class="fcard reveal">
         <div class="ic">🎚️</div>
-        <h3>Develop</h3>
-        <p>White balance, tone, presence, parametric and point curves, 8-band colour mixer, Point Color, 3-way grading, detail, vignette, crop &amp; straighten.</p>
+        <h3>8 Categorized Develop Tabs</h3>
+        <p>Adjust (tone &amp; curves), Color (3D Point Color, 3-way grading, calibration), Detail, dedicated <b>HDR</b> (Auto HDR &amp; fusion), Geometry (Upright &amp; optics), Masks (SAM 2.1 click-to-select), Auto (16 styles with strength slider), and on-device AI.</p>
       </article>
       <article class="fcard reveal" style="--glow:rgba(37,198,216,.2)">
         <div class="ic">📷</div>
@@ -791,8 +806,8 @@ footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
       </article>
       <article class="fcard reveal" style="--glow:rgba(167,139,250,.24)">
         <div class="ic">🧠</div>
-        <h3>On-Device AI Models</h3>
-        <p>Paint over unwanted objects for edge-snapped removal using <b>LaMa</b> or <b>Stable Diffusion</b> generative fill. Clean high-ISO noise with <b>NAFNet</b>. Everything stays in-place as non-destructive adjustment layers on the RAW master with zero duplicate files.</p>
+        <h3>On-Device Neural Models &amp; SAM</h3>
+        <p>Point-and-click object segmentation with <b>SAM 2.1</b>; auto horizon leveling &amp; vertical alignment with <b>PerspectiveFields</b>; inpainting with <b>Moebius 0.2B</b>, <b>LaMa</b>, or <b>Stable Diffusion</b>; and camera noise cleanup with <b>SCUNet</b> &amp; <b>NAFNet</b>. Stored in-place as non-destructive layers.</p>
       </article>
       <article class="fcard reveal" style="--glow:rgba(167,139,250,.18)">
         <div class="ic">✦</div>
@@ -801,8 +816,8 @@ footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
       </article>
       <article class="fcard reveal">
         <div class="ic">🎭</div>
-        <h3>Masks</h3>
-        <p>Linear, radial, luminance, colour range and AI outlines with add / subtract / intersect, feather and edge shift. Every panel tunes inside a mask.</p>
+        <h3>Masks &amp; SAM 2.1</h3>
+        <p>Point-and-click object segmentation (<kbd>S</kbd>) with Meta's SAM 2.1; linear, radial, luminance, and colour range masks with add / subtract / intersect, feather, and edge shift. Every tool tunes inside a mask.</p>
       </article>
       <article class="fcard reveal" style="--glow:rgba(246,185,48,.16)">
         <div class="ic">📐</div>
@@ -1134,29 +1149,33 @@ npm run tauri dev</pre>
       </div></div>
 
       <div class="step reveal"><div>
-        <h3>Cull</h3>
-        <p>Select photos, open <b>Auto › Catalog &amp; Culling</b> on the Library's right bar and press Run. Review the results list, then filter by rating, flag, label or keyword. Use <b>Find blurred subjects</b> and <b>Find duplicates</b> to clean up further. Open a photo full-size in the viewer with <kbd>←</kbd> <kbd>→</kbd> to step through.</p>
+        <h3>Browse, search &amp; cull</h3>
+        <p>Switch seamlessly across 5 library modes: <kbd>G</kbd> for the multi-column Grid, <kbd>D</kbd> for the chronological Date timeline, <kbd>L</kbd> for the interactive OpenStreetMap Location map with cluster pins and GPS EXIF scanning, <kbd>K</kbd> for gear breakdown By Camera, and <kbd>V</kbd> or <kbd>Enter</kbd> for the full-screen photo viewer. Identify people and search your library by person using on-device <b>ArcFace</b> face recognition under <i>Library › People</i>.</p>
+        <p style="margin-top:6px">Select photos, open <b>Auto › Catalog &amp; Culling</b> and press Run. Use <kbd>0</kbd>–<kbd>5</kbd> for star ratings, <kbd>P</kbd> to pick, <kbd>X</kbd> to reject, and <kbd>U</kbd> to unflag.</p>
       </div></div>
 
       <div class="step reveal"><div>
         <h3>Develop</h3>
-        <p>Open a photo in <b>Develop</b>. The right panel has five tabs:</p>
+        <p>Open a photo in <b>Develop</b>. The right panel organizes every tool into eight focused darkroom tabs:</p>
         <ul>
-          <li><b>Adjust</b> — Basic tone, curves, colour mixer, Point Color, grading, detail, effects.</li>
-          <li><b>Advanced</b> — lens corrections, Transform/Upright, calibration, noise, grain, spot removal (<kbd>Q</kbd>), soft proofing.</li>
-          <li><b>Pro</b> — Levels, Hue/Sat, Selective Color, Channel Mixer, Gradient Map, filters, rotation.</li>
-          <li><b>AI</b> — On-device neural models: <b>Remove objects</b> (paint, snap, LaMa / Stable Diffusion generative fill) and <b>AI Denoise</b> (NAFNet). Stored non-destructively as adjustment layers directly on the RAW master with real-time blending and zero duplicate files.</li>
-          <li><b>Auto</b> — ✦ Auto, profiles, one-at-a-time autos, auto rotate, auto select &amp; remove.</li>
+          <li><b>Adjust</b> — White balance, exposure, tone curve, levels, and RAW engine parameters.</li>
+          <li><b>Color</b> — 8-band colour mixer, 3D Point Color, 3-way color grading, Selective Color, Channel Mixer, Gradient Map, calibration, and printer soft-proofing.</li>
+          <li><b>Detail</b> — Sharpening, noise reduction, vignette &amp; analog grain, creative filters, spot removal (<kbd>Q</kbd>).</li>
+          <li><b>HDR</b> — Dedicated HDR darkroom: ✦ Auto HDR, simulated bracket exposure fusion, tone &amp; detail mapping, and toning curves.</li>
+          <li><b>Geometry</b> — Crop, rotate &amp; flip, Upright perspective solver, lens distortion, and optical defringing.</li>
+          <li><b>Masks</b> — ✦ AI select (subject, sky, background), click-to-select objects with <b>SAM 2.1</b>, gradients, and brush masks.</li>
+          <li><b>Auto</b> — ✦ Auto, 16 professional photo grading styles with real-time 0–200% strength slider, AI fine tune, and auto rotate.</li>
+          <li><b>AI</b> — On-device neural models: AI auto adjust, <b>PerspectiveFields</b> auto alignment (horizon leveling &amp; vertical straightening), <b>NAFNet</b> &amp; <b>SCUNet</b> neural denoise, generative object removal (<b>Stable Diffusion 1.5</b>, <b>Moebius 0.2B</b>, <b>LaMa</b>), and <b>HyperSwap</b> face swap.</li>
         </ul>
       </div></div>
 
       <div class="step reveal"><div>
         <h3>Ask the AI &amp; Agent</h3>
-        <p>Pick a provider in <b>Settings › Agent &amp; MCP</b> (API keys go to the keychain, or read from <code>ANTHROPIC_API_KEY</code>, <code>GEMINI_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>OPENROUTER_API_KEY</code>). Manage on-device models in <b>Settings › AI models</b>. Then type in the <b>✦ AI</b> bar:</p>
+        <p>Pick a provider in <b>Settings › Agent &amp; MCP</b> (API keys go to the keychain, or read from <code>ANTHROPIC_API_KEY</code>, <code>GEMINI_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>OPENROUTER_API_KEY</code>). Manage on-device neural models in <b>Settings › AI models</b>. Press <kbd>S</kbd> to click-to-select objects with Meta's <b>SAM 2.1</b>, or type in the <b>✦ AI</b> bar:</p>
 <pre class="code">select the castle and warm it up a little
 remove the people on the left
-make it moody, keep the sky detail</pre>
-        <p style="margin-top:10px">Or press <kbd>S</kbd> and click objects. <b>✦ AI fine tune</b> levels a tilted horizon first, then tunes the look.</p>
+level the horizon and make it moody</pre>
+        <p style="margin-top:10px"><b>✦ AI fine tune</b> automatically runs <b>PerspectiveFields</b> to level tilted horizons or straighten converging vertical architecture before tuning the look.</p>
       </div></div>
 
       <div class="step reveal"><div>
@@ -1176,21 +1195,26 @@ make it moody, keep the sky detail</pre>
 
     <div class="twocol">
       <div class="box reveal">
-        <h3>Develop shortcuts</h3>
+        <h3>Navigation &amp; develop shortcuts</h3>
         <div class="scroll-x"><table>
           <tr><th>Key</th><th>Action</th></tr>
-          <tr><td><kbd>S</kbd></td><td>✦ Select tool (click to trace an object)</td></tr>
+          <tr><td><kbd>G</kbd></td><td>Grid view (multi-column thumbnails)</td></tr>
+          <tr><td><kbd>D</kbd></td><td>By Date view (chronological timeline)</td></tr>
+          <tr><td><kbd>L</kbd></td><td>By Location view (OpenStreetMap &amp; GPS pins)</td></tr>
+          <tr><td><kbd>K</kbd></td><td>By Camera view (gear &amp; ISO breakdown)</td></tr>
+          <tr><td><kbd>V</kbd> / <kbd>Enter</kbd></td><td>Photo Viewer (100% pixel zoom)</td></tr>
+          <tr><td><kbd>S</kbd></td><td>✦ SAM 2.1 Select tool (click to trace an object)</td></tr>
+          <tr><td><kbd>0</kbd>–<kbd>5</kbd></td><td>Star rating (culling)</td></tr>
+          <tr><td><kbd>P</kbd> · <kbd>X</kbd> · <kbd>U</kbd></td><td>Pick · Reject · Unflag</td></tr>
           <tr><td><kbd>Q</kbd></td><td>Spot removal</td></tr>
-          <tr><td><kbd>R</kbd></td><td>Crop</td></tr>
-          <tr><td><kbd>J</kbd></td><td>Clipping warning</td></tr>
+          <tr><td><kbd>R</kbd></td><td>Crop &amp; straighten</td></tr>
+          <tr><td><kbd>J</kbd></td><td>Clipping warnings</td></tr>
           <tr><td><kbd>O</kbd></td><td>Mask overlay</td></tr>
-          <tr><td><kbd>\</kbd></td><td>Before / after</td></tr>
-          <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>Rotate 90°</td></tr>
-          <tr><td><kbd>Z</kbd> / <kbd>F</kbd></td><td>Zoom 2× / fit</td></tr>
-          <tr><td><kbd>+</kbd> <kbd>−</kbd></td><td>Zoom in / out</td></tr>
+          <tr><td><kbd>\</kbd></td><td>Before / after split</td></tr>
+          <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>Rotate 90° left / right</td></tr>
           <tr><td><kbd>⌘</kbd><kbd>Z</kbd> · <kbd>⌘</kbd><kbd>⇧</kbd><kbd>Z</kbd></td><td>Undo · redo</td></tr>
-          <tr><td><kbd>⌘</kbd><kbd>⇧</kbd><kbd>C</kbd> / <kbd>V</kbd></td><td>Copy / paste settings</td></tr>
-          <tr><td><kbd>Esc</kbd></td><td>Leave tool or selection</td></tr>
+          <tr><td><kbd>⌘</kbd><kbd>⇧</kbd><kbd>C</kbd> / <kbd>V</kbd></td><td>Copy / paste develop settings</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>Return to Grid / cancel selection</td></tr>
         </table></div>
       </div>
       <div class="box reveal">
