@@ -13,7 +13,6 @@ dist
 dist-ssr
 dist-packages/
 dist-release/
-.wrangler/
 *.deb
 *.dmg
 *.local
@@ -21,6 +20,19 @@ target/
 src-tauri/target/
 src-tauri/gen/schemas/
 scripts/
+
+# Cloudflare Pages, Workers, static HTML site, and deployment configs
+html/
+cloudflare-worker/
+cloudflare-updater-worker/
+cloudflare*/
+.wrangler/
+.dev.vars
+.dev.vars.*
+wrangler.toml
+wrangler.json
+wrangler.jsonc
+
 
 # Environment variables and secrets
 .env
