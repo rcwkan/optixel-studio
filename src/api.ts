@@ -23,6 +23,8 @@ export type Photo = {
   edited: boolean;
   thumb_v: number;
   deleted_at: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
 };
 
 export type CopyType = "all" | "original" | "copy" | "edited" | "unedited_original" | "edited_original";
@@ -53,6 +55,12 @@ export type Filter = {
   limit?: number | null;
   /** only photos showing every one of these people */
   people?: number[] | null;
+  /** Filter by captured_at date prefix (e.g. "2026", "2026-11", "2026-11-12") */
+  date?: string | null;
+  /** Filter by camera body name (e.g. "Sony ILCE-7M4") */
+  camera?: string | null;
+  /** Filter by presence of GPS location */
+  has_location?: boolean | null;
 };
 
 export type FolderProgress = {
@@ -625,6 +633,7 @@ export const api = {
   aiRemove: (id: string) => invoke<void>("ai_remove", { id }),
   appInfo: () => invoke<AppInfo>("app_info"),
   query: (filter: Filter) => invoke<Photo[]>("query_photos", { filter }),
+  scanLocations: () => invoke<number>("scan_locations"),
   photo: async (id: number) => (await invoke<Photo[]>("query_photos", { filter: { ids: [id] } }))[0],
   folders: () => invoke<[string, number][]>("list_folders"),
   importFolder: (path: string) => invoke<number>("import_folder", { path }),

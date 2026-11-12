@@ -1,14 +1,18 @@
 import { listen } from "@tauri-apps/api/event";
 import { message, open } from "@tauri-apps/plugin-dialog";
-import { ReactNode, useEffect, useId, useRef, useState } from "react";
+import { ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, AutoFunction, CloudAccount, CloudFolder, Culling, fileManagerName, Filter, flagName, FolderLoading, FolderProgress, ImmichAlbum, JobProgress, LABEL_COLORS, LABELS, NetworkDrive, Photo, Settings, Source, thumbUrl } from "./api";
 import { AutoView, FUNCS } from "./AutoView";
 import { Btn, HUE, Hue, Icon, Panel, Stars } from "./controls";
 import { FaceSearch } from "./People";
 import { PhotoViewer } from "./PhotoViewer";
+import { DateView } from "./DateView";
+import { LocationView } from "./LocationView";
+import { CameraView } from "./CameraView";
 import { CloudBrowser } from "./Storage";
 
 export type SelectMods = { shift: boolean; toggle: boolean };
+export type ViewMode = "grid" | "date" | "location" | "camera" | "viewer";
 
 type Props = {
   photos: Photo[];
@@ -80,13 +84,22 @@ export function Library(p: Props) {
   const openPanel = (fn: AutoFunction | null) => (setAutoFn(fn), setPanel(true));
 
   const [size, setSize] = useState(170);
-  const [viewMode, setViewMode] = useState<"grid" | "viewer">("grid");
+  const [viewMode, setViewMode] = useState<ViewMode>("grid");
+  const f = p.filter;
+  const dateCount = useMemo(() => p.photos.filter((ph) => ph.captured_at && !ph.captured_at.startsWith("0000")).length, [p.photos]);
+  const geoCount = useMemo(() => p.photos.filter((ph) => typeof ph.latitude === "number" && typeof ph.longitude === "number").length, [p.photos]);
+  const cameraCount = useMemo(() => new Set(p.photos.map((ph) => ph.camera?.trim()).filter(Boolean)).size, [p.photos]);
+
+  useEffect(() => {
+    if (f.view === "by-date" && viewMode !== "date") setViewMode("date");
+    else if (f.view === "by-location" && viewMode !== "location") setViewMode("location");
+    else if (f.view === "by-camera" && viewMode !== "camera") setViewMode("camera");
+  }, [f.view, viewMode]);
   const [albums, setAlbums] = useState<ImmichAlbum[]>([]);
   const [online, setOnline] = useState<Record<string, boolean>>({});
   const [cloudDirs, setCloudDirs] = useState<CloudFolder[]>([]);
   const [browse, setBrowse] = useState<CloudAccount | null>(null);
   const [showAdvFilter, setShowAdvFilter] = useState(false);
-  const f = p.filter;
   const hasAdvFilters = Boolean(f.copy_type || f.aspect || f.edited != null);
   const advFilterCount = [f.copy_type, f.aspect, f.edited != null ? f.edited : null].filter(Boolean).length;
   const immichUrl = p.settings?.immich_url;
@@ -125,14 +138,14 @@ export function Library(p: Props) {
     return () => io.disconnect();
   }, [p.nextPage, p.photos.length]);
 
-  // Global hotkeys to toggle between Grid mode and Viewer mode
+  // Global hotkeys to switch views (Grid, Date, Location, Camera, Viewer)
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
       if (["INPUT", "TEXTAREA", "SELECT"].includes(tag)) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const k = e.key.toLowerCase();
-      if ((k === "v" || k === "enter") && viewMode === "grid") {
+      if ((k === "v" || k === "enter") && viewMode !== "viewer") {
         if (p.active || p.photos.length > 0) {
           e.preventDefault();
           if (!p.active && p.photos.length > 0) {
@@ -140,7 +153,19 @@ export function Library(p: Props) {
           }
           setViewMode("viewer");
         }
-      } else if ((k === "g" || k === "escape") && viewMode === "viewer") {
+      } else if (k === "g") {
+        e.preventDefault();
+        setViewMode("grid");
+      } else if (k === "d" && viewMode !== "date") {
+        e.preventDefault();
+        setViewMode("date");
+      } else if (k === "l" && viewMode !== "location") {
+        e.preventDefault();
+        setViewMode("location");
+      } else if (k === "k" && viewMode !== "camera") {
+        e.preventDefault();
+        setViewMode("camera");
+      } else if (k === "escape" && viewMode !== "grid") {
         e.preventDefault();
         setViewMode("grid");
       }
@@ -198,10 +223,49 @@ export function Library(p: Props) {
             label="All Photographs"
             hue="blue"
             icon={<Icon d={ICONS.photos} />}
-            active={(f.view === "all" || (!f.folder && !f.immich_album && !f.ids && !f.people && !f.in_bin && f.view !== "bin")) && f.view !== "loading" && !p.loadingFolder}
+            active={(f.view === "all" || (!f.folder && !f.immich_album && !f.ids && !f.people && !f.in_bin && f.view !== "bin" && !f.view?.startsWith("by-"))) && f.view !== "loading" && !p.loadingFolder && viewMode === "grid"}
             loading={p.loadingFolder?.viewId === "all"}
             progress={p.loadingFolder?.viewId === "all" ? p.loadingFolder.progress : undefined}
-            onClick={() => (p.onShowAll ? p.onShowAll() : show({ view: "all" }))}
+            onClick={() => {
+              setViewMode("grid");
+              p.onShowAll ? p.onShowAll() : show({ view: "all" });
+            }}
+          />
+          <FolderRow
+            label="By Date"
+            hue="cyan"
+            icon={<Icon d={ICONS.calendar} />}
+            count={dateCount || undefined}
+            active={viewMode === "date" || f.view === "by-date"}
+            onClick={() => {
+              setViewMode("date");
+              show({ view: "by-date" });
+            }}
+            title="Browse photos chronologically by year, month, and day (D)"
+          />
+          <FolderRow
+            label="By Location"
+            hue="emerald"
+            icon={<Icon d={ICONS.location} />}
+            count={geoCount || undefined}
+            active={viewMode === "location" || f.view === "by-location"}
+            onClick={() => {
+              setViewMode("location");
+              show({ view: "by-location" });
+            }}
+            title="Interactive map and places of geotagged photos (L)"
+          />
+          <FolderRow
+            label="By Camera"
+            hue="amber"
+            icon={<Icon d={ICONS.camera} />}
+            count={cameraCount || undefined}
+            active={viewMode === "camera" || f.view === "by-camera"}
+            onClick={() => {
+              setViewMode("camera");
+              show({ view: "by-camera" });
+            }}
+            title="Browse photos by camera make, model, and lens (K)"
           />
           <FolderRow
             label="Bin"
@@ -463,11 +527,14 @@ export function Library(p: Props) {
             </button>
           )}
 
-          {/* ACDSee-style View Mode Switcher: Grid (Manage) vs Viewer (View) */}
+          {/* View Mode Switcher: Grid, Date, Location, Camera, Viewer */}
           <div className="flex items-center rounded-md bg-neutral-800 p-0.5 border border-neutral-700/60 shadow-xs">
             <button
               type="button"
-              onClick={() => setViewMode("grid")}
+              onClick={() => {
+                setViewMode("grid");
+                if (f.view?.startsWith("by-")) show({ view: "all" });
+              }}
               className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer ${
                 viewMode === "grid"
                   ? "bg-[var(--theme-accent,#0ea5e9)] text-[var(--theme-accent-contrast,#ffffff)] font-semibold shadow-xs"
@@ -482,6 +549,65 @@ export function Library(p: Props) {
                 <rect x="14" y="14" width="7" height="7" rx="1" />
               </svg>
               <span>Grid</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode("date");
+                show({ view: "by-date" });
+              }}
+              className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer ${
+                viewMode === "date"
+                  ? "bg-[var(--theme-accent,#0ea5e9)] text-[var(--theme-accent-contrast,#ffffff)] font-semibold shadow-xs"
+                  : "text-neutral-400 hover:text-neutral-200"
+              }`}
+              title="By Date — Chronological timeline view grouped by year, month and day (Shortcut: D)"
+            >
+              <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="3" y="4" width="18" height="18" rx="2" />
+                <line x1="16" y1="2" x2="16" y2="6" />
+                <line x1="8" y1="2" x2="8" y2="6" />
+                <line x1="3" y1="10" x2="21" y2="10" />
+              </svg>
+              <span>Date</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode("location");
+                show({ view: "by-location" });
+              }}
+              className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer ${
+                viewMode === "location"
+                  ? "bg-[var(--theme-accent,#0ea5e9)] text-[var(--theme-accent-contrast,#ffffff)] font-semibold shadow-xs"
+                  : "text-neutral-400 hover:text-neutral-200"
+              }`}
+              title="By Location — Interactive map and geotagged places (Shortcut: L)"
+            >
+              <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                <circle cx="12" cy="10" r="3" />
+              </svg>
+              <span>Location</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode("camera");
+                show({ view: "by-camera" });
+              }}
+              className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer ${
+                viewMode === "camera"
+                  ? "bg-[var(--theme-accent,#0ea5e9)] text-[var(--theme-accent-contrast,#ffffff)] font-semibold shadow-xs"
+                  : "text-neutral-400 hover:text-neutral-200"
+              }`}
+              title="By Camera — Browse and filter by camera body, lens, and shooting specs (Shortcut: K)"
+            >
+              <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                <circle cx="12" cy="13" r="4" />
+              </svg>
+              <span>Camera</span>
             </button>
             <button
               type="button"
@@ -716,7 +842,92 @@ export function Library(p: Props) {
             onOpenCompare={p.onOpenCompare}
             onVirtualCopy={p.onVirtualCopy}
             selectedIds={p.selected}
-            folderName={f.folder ? short(f.folder) : f.view?.startsWith("people:") ? f.view.slice(7) : f.view === "bin" ? "Bin" : f.view === "loading" ? "" : "All Photographs"}
+            folderName={
+              f.folder
+                ? short(f.folder)
+                : f.view?.startsWith("people:")
+                ? f.view.slice(7)
+                : f.view === "bin"
+                ? "Bin"
+                : f.view === "by-date"
+                ? "By Date"
+                : f.view === "by-location"
+                ? "By Location"
+                : f.view === "by-camera"
+                ? "By Camera"
+                : f.view === "loading"
+                ? ""
+                : "All Photographs"
+            }
+          />
+        ) : viewMode === "date" ? (
+          <DateView
+            photos={p.photos}
+            selected={p.selected}
+            active={p.active}
+            workingIds={p.workingIds}
+            busyAiIds={p.busyAiIds}
+            size={size}
+            onSelect={p.select}
+            onOpenDevelop={p.openDevelop}
+            onOpenViewer={(id) => {
+              p.select(id, { shift: false, toggle: false });
+              setViewMode("viewer");
+            }}
+            onSelectMultiple={(ids) => {
+              if (ids.length > 0) {
+                p.select(ids[0], { shift: false, toggle: false });
+                for (let i = 1; i < ids.length; i++) {
+                  p.select(ids[i], { shift: false, toggle: true });
+                }
+              }
+            }}
+          />
+        ) : viewMode === "location" ? (
+          <LocationView
+            photos={p.photos}
+            selected={p.selected}
+            active={p.active}
+            workingIds={p.workingIds}
+            busyAiIds={p.busyAiIds}
+            size={size}
+            onSelect={p.select}
+            onOpenDevelop={p.openDevelop}
+            onOpenViewer={(id) => {
+              p.select(id, { shift: false, toggle: false });
+              setViewMode("viewer");
+            }}
+            onSelectMultiple={(ids) => {
+              if (ids.length > 0) {
+                p.select(ids[0], { shift: false, toggle: false });
+                for (let i = 1; i < ids.length; i++) {
+                  p.select(ids[i], { shift: false, toggle: true });
+                }
+              }
+            }}
+          />
+        ) : viewMode === "camera" ? (
+          <CameraView
+            photos={p.photos}
+            selected={p.selected}
+            active={p.active}
+            workingIds={p.workingIds}
+            busyAiIds={p.busyAiIds}
+            size={size}
+            onSelect={p.select}
+            onOpenDevelop={p.openDevelop}
+            onOpenViewer={(id) => {
+              p.select(id, { shift: false, toggle: false });
+              setViewMode("viewer");
+            }}
+            onSelectMultiple={(ids) => {
+              if (ids.length > 0) {
+                p.select(ids[0], { shift: false, toggle: false });
+                for (let i = 1; i < ids.length; i++) {
+                  p.select(ids[i], { shift: false, toggle: true });
+                }
+              }
+            }}
           />
         ) : p.loadingFolder && p.photos.length === 0 ? (
           <FolderLoadingScreen loading={p.loadingFolder} />
@@ -1175,6 +1386,9 @@ const ICONS = {
   album: "M7 4h10 M5 7h14 M4 10h16v10H4z",
   info: "M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18z M12 11v5 M12 7.5v.5",
   bolt: "M13 3L5 13.5h6L10 21l8-10.5h-6z",
+  calendar: "M8 2v4 M16 2v4 M3 10h18 M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z",
+  location: "M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z M12 13a3 3 0 1 1 0-6 3 3 0 0 1 0 6z",
+  camera: "M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z M12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
 };
 
 export function Cell({

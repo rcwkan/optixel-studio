@@ -1386,6 +1386,8 @@ fn add_master(core: &Arc<Core>, p: &Photo, out: &Path, size: (usize, usize), d: 
         shutter: p.shutter.clone(),
         focal_length: p.focal_length,
         orientation: 1,
+        latitude: p.latitude,
+        longitude: p.longitude,
     };
     let path = out.to_string_lossy().to_string();
     let folder = out.parent().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
@@ -1642,6 +1644,8 @@ mod tests {
             edited: false,
             thumb_v: 0,
             deleted_at: None,
+            latitude: None,
+            longitude: None,
         }
     }
 
