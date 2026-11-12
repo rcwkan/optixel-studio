@@ -47,7 +47,9 @@ CREATE TABLE IF NOT EXISTS photos (
   thumb_v INTEGER NOT NULL DEFAULT 0,
   imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   edited_at TEXT,
-  deleted_at TEXT
+  deleted_at TEXT,
+  latitude REAL,
+  longitude REAL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS photos_path ON photos(path) WHERE master_id IS NULL;
 CREATE INDEX IF NOT EXISTS photos_folder ON photos(folder);
@@ -80,7 +82,12 @@ pub fn open(path: &Path) -> Result<Connection, String> {
         let _ = c.execute(&format!("ALTER TABLE faces ADD COLUMN {col} REAL"), []);
     }
     let _ = c.execute("ALTER TABLE photos ADD COLUMN deleted_at TEXT", []);
+    let _ = c.execute("ALTER TABLE photos ADD COLUMN latitude REAL", []);
+    let _ = c.execute("ALTER TABLE photos ADD COLUMN longitude REAL", []);
     let _ = c.execute("CREATE INDEX IF NOT EXISTS photos_deleted ON photos(deleted_at)", []);
+    let _ = c.execute("CREATE INDEX IF NOT EXISTS photos_captured_at ON photos(captured_at)", []);
+    let _ = c.execute("CREATE INDEX IF NOT EXISTS photos_camera ON photos(camera)", []);
+    let _ = c.execute("CREATE INDEX IF NOT EXISTS photos_geo ON photos(latitude, longitude)", []);
     let ids: Vec<i64> = c
         .prepare("SELECT id FROM photos WHERE json_array_length(json_extract(develop_json, '$.masks')) > 0")
         .and_then(|mut st| st.query_map([], |r| r.get(0)).map(|rows| rows.flatten().collect()))
@@ -116,10 +123,13 @@ pub struct Photo {
     pub edited: bool,
     pub thumb_v: i64,
     pub deleted_at: Option<String>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
 }
 
 const COLS: &str = "id, path, folder, filename, master_id, copy_name, width, height, captured_at, camera, lens, \
-                    iso, aperture, shutter, focal_length, rating, flag, color_label, keywords, edited_at IS NOT NULL, thumb_v, deleted_at";
+                    iso, aperture, shutter, focal_length, rating, flag, color_label, keywords, edited_at IS NOT NULL, thumb_v, deleted_at, \
+                    latitude, longitude";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Photo> {
     Ok(Photo {
@@ -145,6 +155,8 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Photo> {
         edited: r.get(19)?,
         thumb_v: r.get(20)?,
         deleted_at: r.get(21)?,
+        latitude: r.get(22).unwrap_or(None),
+        longitude: r.get(23).unwrap_or(None),
     })
 }
 
@@ -175,6 +187,12 @@ pub struct Filter {
     pub in_bin: Option<bool>,
     /// Only photos showing every one of these people (faces.rs).
     pub people: Option<Vec<i64>>,
+    /// Filter photos by date prefix (e.g. "2026", "2026-11", "2026-11-12")
+    pub date: Option<String>,
+    /// Filter photos by camera name (e.g. "Sony ILCE-7M4")
+    pub camera: Option<String>,
+    /// Filter photos by presence of GPS location
+    pub has_location: Option<bool>,
 }
 
 const TEXT_COLS: &str = "(filename LIKE ? OR camera LIKE ? OR lens LIKE ? OR keywords LIKE ? \
@@ -268,6 +286,21 @@ pub fn query(c: &Connection, f: &Filter) -> Result<Vec<Photo>, String> {
         }
         // inline: a whole catalog's results can pass SQLite's limit of 32766 parameters
         sql += &format!(" AND id IN ({})", ids.iter().map(i64::to_string).collect::<Vec<_>>().join(","));
+    }
+    if let Some(date) = f.date.as_deref().filter(|s| !s.is_empty()) {
+        sql += " AND captured_at LIKE ?";
+        args.push(format!("{date}%").into());
+    }
+    if let Some(cam) = f.camera.as_deref().filter(|s| !s.is_empty()) {
+        sql += " AND camera = ?";
+        args.push(cam.to_string().into());
+    }
+    if let Some(has_loc) = f.has_location {
+        if has_loc {
+            sql += " AND latitude IS NOT NULL AND longitude IS NOT NULL";
+        } else {
+            sql += " AND (latitude IS NULL OR longitude IS NULL)";
+        }
     }
     match f.in_bin {
         Some(true) => sql += " AND deleted_at IS NOT NULL",
@@ -607,9 +640,9 @@ pub fn virtual_copy(c: &Connection, id: i64) -> Result<i64, String> {
         c.query_row("SELECT COUNT(*) FROM photos WHERE master_id = ?", [master], |r| r.get(0)).map_err(es)?;
     c.execute(
         "INSERT INTO photos (path, folder, filename, master_id, copy_name, width, height, captured_at, camera, lens, iso,
-           aperture, shutter, focal_length, rating, flag, color_label, keywords, develop_json, edited_at)
+           aperture, shutter, focal_length, rating, flag, color_label, keywords, develop_json, edited_at, latitude, longitude)
          SELECT path, folder, filename, ?, ?, width, height, captured_at, camera, lens, iso,
-           aperture, shutter, focal_length, rating, flag, color_label, keywords, develop_json, edited_at
+           aperture, shutter, focal_length, rating, flag, color_label, keywords, develop_json, edited_at, latitude, longitude
          FROM photos WHERE id = ?",
         params![master, format!("Copy {}", n + 1), id],
     )
@@ -631,9 +664,9 @@ pub fn save_as_new_photo(c: &Connection, id: i64, develop: Option<&Develop>, cop
     };
     c.execute(
         "INSERT INTO photos (path, folder, filename, master_id, copy_name, width, height, captured_at, camera, lens, iso,
-           aperture, shutter, focal_length, rating, flag, color_label, keywords, develop_json, edited_at)
+           aperture, shutter, focal_length, rating, flag, color_label, keywords, develop_json, edited_at, latitude, longitude)
          SELECT path, folder, filename, ?, ?, width, height, captured_at, camera, lens, iso,
-           aperture, shutter, focal_length, rating, flag, color_label, keywords, develop_json, CURRENT_TIMESTAMP
+           aperture, shutter, focal_length, rating, flag, color_label, keywords, develop_json, CURRENT_TIMESTAMP, latitude, longitude
          FROM photos WHERE id = ?",
         params![master, name, id],
     )
@@ -853,6 +886,8 @@ pub struct Meta {
     pub shutter: Option<String>,
     pub focal_length: Option<f64>,
     pub orientation: u8,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
 }
 
 /// New master row with its first history step; None when `path` is already in the catalog.
@@ -878,8 +913,8 @@ pub fn add_photo_with_id(
         let n = c
             .execute(
                 "INSERT OR IGNORE INTO photos (id, path, folder, filename, captured_at, camera, lens, iso, aperture, shutter,
-                   focal_length, develop_json, edited_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN datetime('now') END)",
+                   focal_length, develop_json, edited_at, latitude, longitude)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN datetime('now') END, ?, ?)",
                 params![
                     req_id,
                     path,
@@ -894,6 +929,8 @@ pub fn add_photo_with_id(
                     m.focal_length,
                     json,
                     *d != Develop::default(),
+                    m.latitude,
+                    m.longitude,
                 ],
             )
             .map_err(es)?;
@@ -902,8 +939,8 @@ pub fn add_photo_with_id(
         let n = c
             .execute(
                 "INSERT OR IGNORE INTO photos (path, folder, filename, captured_at, camera, lens, iso, aperture, shutter,
-                   focal_length, develop_json, edited_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN datetime('now') END)",
+                   focal_length, develop_json, edited_at, latitude, longitude)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN datetime('now') END, ?, ?)",
                 params![
                     path,
                     folder,
@@ -917,6 +954,8 @@ pub fn add_photo_with_id(
                     m.focal_length,
                     json,
                     *d != Develop::default(),
+                    m.latitude,
+                    m.longitude,
                 ],
             )
             .map_err(es)?;
@@ -969,7 +1008,71 @@ fn read_exif(path: &Path) -> Meta {
     m.shutter = s(Tag::ExposureTime);
     m.focal_length = f(Tag::FocalLength);
     m.orientation = field(Tag::Orientation).and_then(|f| f.value.get_uint(0)).unwrap_or(1) as u8;
+
+    // GPS coordinates extraction
+    let parse_gps_dms = |tag: Tag| -> Option<f64> {
+        let f = ex.fields().find(|f| f.tag == tag)?;
+        match &f.value {
+            EV::Rational(v) if v.len() >= 3 && v[0].denom != 0 && v[1].denom != 0 && v[2].denom != 0 => {
+                let deg = v[0].to_f64();
+                let min = v[1].to_f64();
+                let sec = v[2].to_f64();
+                Some(deg + min / 60.0 + sec / 3600.0)
+            }
+            _ => None,
+        }
+    };
+    let gps_ref = |tag: Tag| -> Option<String> {
+        ex.fields().find(|f| f.tag == tag).map(|f| f.display_value().to_string().trim().to_uppercase())
+    };
+
+    if let Some(mut lat) = parse_gps_dms(Tag::GPSLatitude) {
+        if let Some(r) = gps_ref(Tag::GPSLatitudeRef) {
+            if r.contains('S') {
+                lat = -lat;
+            }
+        }
+        if lat.is_finite() && (-90.0..=90.0).contains(&lat) {
+            m.latitude = Some(lat);
+        }
+    }
+    if let Some(mut lon) = parse_gps_dms(Tag::GPSLongitude) {
+        if let Some(r) = gps_ref(Tag::GPSLongitudeRef) {
+            if r.contains('W') {
+                lon = -lon;
+            }
+        }
+        if lon.is_finite() && (-180.0..=180.0).contains(&lon) {
+            m.longitude = Some(lon);
+        }
+    }
+
     m
+}
+
+/// Scans photos with missing GPS coordinates and populates them if present in EXIF.
+pub fn scan_missing_gps(c: &Connection) -> Result<usize, String> {
+    let mut st = c
+        .prepare("SELECT id, path FROM photos WHERE latitude IS NULL AND deleted_at IS NULL LIMIT 200")
+        .map_err(es)?;
+    let rows = st
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+        .map_err(es)?
+        .flatten()
+        .collect::<Vec<_>>();
+    let mut updated = 0;
+    for (id, path) in rows {
+        let m = read_exif(Path::new(&path));
+        if m.latitude.is_some() && m.longitude.is_some() {
+            if c.execute(
+                "UPDATE photos SET latitude = ?, longitude = ? WHERE id = ?",
+                params![m.latitude, m.longitude, id],
+            ).is_ok() {
+                updated += 1;
+            }
+        }
+    }
+    Ok(updated)
 }
 
 pub const THUMB: u32 = 400;

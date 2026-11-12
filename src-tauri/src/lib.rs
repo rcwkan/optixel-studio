@@ -664,6 +664,11 @@ fn query_photos(core: St, filter: catalog::Filter) -> Result<Vec<catalog::Photo>
 }
 
 #[tauri::command(async)]
+fn scan_locations(core: St) -> Result<usize, String> {
+    catalog::scan_missing_gps(&core.db())
+}
+
+#[tauri::command(async)]
 fn list_folders(core: St) -> Result<Vec<(String, i64)>, String> {
     catalog::folders(&core.db())
 }
@@ -1847,6 +1852,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             query_photos,
+            scan_locations,
             list_folders,
             import_folder,
             browse_folder,

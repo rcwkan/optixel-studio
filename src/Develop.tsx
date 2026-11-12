@@ -3046,7 +3046,7 @@ function SelectionsTab({
       {sam.click && (
         <Seg
           options={[
-            ["sam", "◎ SAM 2.1 · local"],
+            ["sam", "◎ SAM (local AI)"],
             ["provider", "✦ AI provider"],
           ]}
           value={engine}
@@ -3059,7 +3059,7 @@ function SelectionsTab({
         className="w-full"
         title={local ? "Click objects on the photo to select them with Segment Anything, on this computer (S)" : "Click objects on the photo to select them with the AI (S)"}
       >
-        {selecting ? `${local ? "◎" : "✦"} Click objects on the photo… (S to stop)` : local ? "◎ Select objects (SAM 2.1)" : "✦ Select objects with AI"}
+        {selecting ? `${local ? "◎" : "✦"} Click objects on the photo… (S to stop)` : local ? "◎ Select objects (SAM)" : "✦ Select objects with AI"}
       </Btn>
       {selecting && (
         <p className="text-[10px] text-neutral-500">

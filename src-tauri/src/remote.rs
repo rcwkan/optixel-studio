@@ -211,6 +211,8 @@ fn open_from_immich(core: &Core, url: &str, key: &str, album: Option<&str>, page
                 shutter: x["exposureTime"].as_str().map(String::from),
                 focal_length: x["focalLength"].as_f64(),
                 orientation: 1,
+                latitude: x["latitude"].as_f64().filter(|v| v.is_finite() && (-90.0..=90.0).contains(v)),
+                longitude: x["longitude"].as_f64().filter(|v| v.is_finite() && (-180.0..=180.0).contains(v)),
             };
             if let Some(id) = catalog::add_photo(&tx, &path, "Immich", name, &m, &develop::Develop::default())? {
                 let (w, h) = (a["width"].as_i64().or(x["exifImageWidth"].as_i64()), a["height"].as_i64().or(x["exifImageHeight"].as_i64()));

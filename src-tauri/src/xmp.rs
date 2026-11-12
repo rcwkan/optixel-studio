@@ -455,6 +455,8 @@ mod tests {
             edited: true,
             thumb_v: 1,
             deleted_at: None,
+            latitude: None,
+            longitude: None,
         }
     }
 
