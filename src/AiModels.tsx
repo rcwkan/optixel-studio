@@ -53,12 +53,13 @@ export function AiModelsSettings({ settings, setSettings }: { settings: Settings
   const installedModels = models.filter((m) => m.installed);
   const installedMb = installedModels.reduce((acc, m) => acc + m.size_mb, 0);
 
-  const renderModelList = (group: AiModel[], key?: SettingModelKey) => {
+  // `perRun`: the tool takes the model from its own panel each run, so none is "Active" here
+  const renderModelList = (group: AiModel[], key?: SettingModelKey, perRun = false) => {
     const visible = filter === "installed" ? group.filter((m) => m.installed) : group;
     if (visible.length === 0) {
       return <p className="text-[11px] text-neutral-500">No installed models in this group yet.</p>;
     }
-    const current = inUse(group, key && settings[key]);
+    const current = perRun ? undefined : inUse(group, key && settings[key]);
     return (
       <div className="space-y-2">
         {visible.map((m) => {
@@ -143,6 +144,7 @@ export function AiModelsSettings({ settings, setSettings }: { settings: Settings
 
   const alignModels = models.filter((m) => m.kind === "align");
   const denoiseModels = models.filter((m) => m.kind === "denoise");
+  const upscaleModels = models.filter((m) => m.kind === "upscale");
   const removalModels = models.filter((m) => m.kind === "inpaint" || m.kind === "generate");
   const faceRecModels = models.filter((m) => m.kind === "faces");
   const faceSwapModels = models.filter((m) => m.kind === "faceswap");
@@ -325,6 +327,13 @@ export function AiModelsSettings({ settings, setSettings }: { settings: Settings
               </span>
             </div>
             {renderModelList(denoiseModels, "ai_denoise_model")}
+            <div className="border-t border-neutral-800 pt-3">
+              <h3 className="text-xs font-semibold text-neutral-100">Neural Upscale · Real-ESRGAN</h3>
+              <p className={hint}>
+                Used by Develop → AI → Upscale and Auto → Enhance → Super resolution → Upscaler. Enlarges 4× (2× and 3× shrink that result) and adds detail; writes a new, larger photo next to the original, so big photos take a while.
+              </p>
+            </div>
+            {renderModelList(upscaleModels, undefined, true)}
           </section>
         )}
 

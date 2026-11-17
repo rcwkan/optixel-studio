@@ -173,6 +173,9 @@ pub struct EnhanceSettings {
     pub scale: f32,
     pub sharpen: f32,
     pub max_megapixels: f32,
+    /// The AI upscale model that enlarges (an `upscale` id from aimodel.rs, such as realesrgan-x4plus); empty:
+    /// the built-in Lanczos. Ignored by the external command engine.
+    pub upscale_model: String,
     /// builtin | ai (a downloaded denoise model) | command (an external AI engine such as Real-ESRGAN, see `command`)
     pub engine: String,
     pub command: String,
@@ -203,6 +206,7 @@ impl Default for EnhanceSettings {
             scale: 2.0,
             sharpen: 25.0,
             max_megapixels: 48.0,
+            upscale_model: String::new(),
             engine: "builtin".into(),
             command: "realesrgan-ncnn-vulkan -i {{INPUT}} -o {{OUTPUT}} -s {{SCALE}}".into(),
             ai_model: String::new(),
@@ -1410,6 +1414,10 @@ pub fn enhance(core: &Arc<Core>, ids: &[i64], s: &EnhanceSettings, job: &Job) ->
     if !s.denoise && !s.super_resolution && !removing {
         return Err("choose Denoise, Super Resolution or both".into());
     }
+    // fail now, not after each photo has been denoised: the external command brings its own upscaler
+    if s.super_resolution && s.engine != "command" && !s.upscale_model.is_empty() {
+        aimodel::upscale_ready(&core.dir(), &s.upscale_model)?;
+    }
     let photos = masters(core, ids)?;
     let n = photos.len();
     let (mut rows, mut made) = (vec![], 0);
@@ -1425,6 +1433,19 @@ pub fn enhance(core: &Arc<Core>, ids: &[i64], s: &EnhanceSettings, job: &Job) ->
             let fit = (s.max_megapixels.max(1.0) * 1e6 / (w0 * h0) as f32).sqrt();
             let scale = if s.super_resolution { s.scale.clamp(1.0, 4.0).min(fit).max(1.0) } else { 1.0 };
             let scaled = scale > 1.01;
+            // the chosen AI upscaler (already sharp, so `sharpen` is not applied), else Lanczos with back-projection
+            let enlarge = |img: develop::Img| -> Result<develop::Img, String> {
+                if !scaled {
+                    Ok(img)
+                } else if s.upscale_model.is_empty() {
+                    Ok(enhance::upscale(img, scale, s.sharpen))
+                } else {
+                    aimodel::upscale_in(&core.dir(), &s.upscale_model, &img, scale, &|done, total| {
+                        job.progress("AI enlarging", done, total);
+                        !job.cancelled()
+                    })
+                }
+            };
             let img = if s.engine == "command" {
                 let dir = std::env::temp_dir().join(format!("optixel-enhance-{}", crate::new_token()));
                 fs::create_dir_all(&dir).map_err(es)?;
@@ -1459,10 +1480,10 @@ pub fn enhance(core: &Arc<Core>, ids: &[i64], s: &EnhanceSettings, job: &Job) ->
                 } else {
                     img
                 };
-                if scaled { enhance::upscale(img, scale, s.sharpen) } else { img }
+                enlarge(img)?
             } else {
                 let img = if s.denoise { enhance::denoise(img, s.strength, s.detail, s.color) } else { img };
-                if scaled { enhance::upscale(img, scale, s.sharpen) } else { img }
+                enlarge(img)?
             };
             let out = enhanced_path(&enhanced_dir(&s.folder, p)?, p, &format!("-Enhanced{}{}{}", if s.denoise { "-NR" } else { "" }, if scaled { "-SR" } else { "" }, if removing { "-Removed" } else { "" }));
             let float = s.format == "float" || (s.format == "auto" && develop::is_raw(&file));
@@ -1716,6 +1737,11 @@ mod tests {
         let sky = core.develop(sharp.id).unwrap().masks.into_iter().find(|m| m.name == "Sky").expect("a Sky selection");
         assert!(sky.adjustments.exposure < 0.0 && sky.components[0].kind == "polygon");
 
+        // an AI upscaler that is not downloaded stops the run before any photo is touched; the external command brings its own
+        let e = run(&core, "enhance", &[soft.id], &json!({ "denoise": false, "super_resolution": true, "upscale_model": "realesrgan-x4plus" }), &job).unwrap_err();
+        assert!(e.contains("download the AI upscale model"), "{e}");
+        let e = run(&core, "enhance", &[soft.id], &json!({ "denoise": false, "super_resolution": true, "upscale_model": "lama-big" }), &job).unwrap_err();
+        assert!(e.contains("not an upscale model"), "{e}");
         let r = run(&core, "enhance", &[soft.id], &json!({ "denoise": true, "super_resolution": true, "scale": 2, "max_megapixels": 1 }), &job).unwrap();
         let new = r["rows"][0]["new_id"].as_i64().unwrap_or_else(|| panic!("{r}"));
         let out = PathBuf::from(r["rows"][0]["output"].as_str().unwrap());

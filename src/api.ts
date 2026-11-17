@@ -363,6 +363,8 @@ export type EnhanceSettings = {
   scale: number;
   sharpen: number;
   max_megapixels: number;
+  /** An AI upscale model id (realesrgan-x4plus, realesrgan-x4plus-anime-6b); empty: the built-in Lanczos */
+  upscale_model: string;
   engine: string;
   command: string;
   format: string;
@@ -591,7 +593,7 @@ function parseScopes(buf: ArrayBuffer): ScopesData {
 export type AiHardware = { gpu: string | null; vram_mb: number | null; device: string };
 export type AiModel = {
   id: string;
-  /** denoise | inpaint | generate | faces | faceswap | align */
+  /** denoise | upscale | inpaint | generate | faces | faceswap | align */
   kind: string;
   name: string;
   blurb: string;

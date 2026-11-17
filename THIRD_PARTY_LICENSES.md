@@ -91,6 +91,10 @@ Optixel Studio provides client-side neural processing for photographic retouchin
    - *Attribution*: RunwayML & CompVis.
    - *Ethical Use Requirements*: Use of Stable Diffusion weights is subject to the OpenRAIL-M Use Restrictions (prohibiting defamatory, harassing, or unlawful generation).
 
+7. **Real-ESRGAN (RealESRGAN_x4plus and RealESRGAN_x4plus_anime_6B)**
+   - *License*: BSD 3-Clause License
+   - *Attribution*: Xintao Wang et al. ("Real-ESRGAN: Training Real-World Blind Super-Resolution with Pure Synthetic Data"); ONNX exports by thisismert on Hugging Face.
+
 ---
 
 ## 4. Frontend UI Stack

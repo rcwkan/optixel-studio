@@ -191,7 +191,20 @@ export const FUNCS: { id: AutoFunction; title: string; short: string; icon: stri
       { kind: "slider", k: "detail", label: "Keep fine detail", min: 0, max: 100, when: on("denoise") },
       { kind: "slider", k: "color", label: "Colour noise", min: 0, max: 100, when: on("denoise") },
       { kind: "heading", label: "Super resolution", when: on("super_resolution") },
-      { kind: "slider", k: "sharpen", label: "Sharpen", min: 0, max: 100, when: on("super_resolution") },
+      {
+        kind: "select",
+        k: "upscale_model",
+        label: "Upscaler",
+        basic: true,
+        when: (s) => !!s.super_resolution && s.engine !== "command",
+        options: [
+          ["", "Built-in: Lanczos (no AI model)"],
+          ["realesrgan-x4plus", "Real-ESRGAN x4plus: photos (AI model)"],
+          ["realesrgan-x4plus-anime-6b", "Real-ESRGAN anime 6B: drawings (AI model)"],
+        ],
+        hint: "The AI upscalers add detail but are slow on big photos. Download them in Settings → AI models. They enlarge 4×; smaller sizes shrink that result.",
+      },
+      { kind: "slider", k: "sharpen", label: "Sharpen", min: 0, max: 100, when: (s) => !!s.super_resolution && !s.upscale_model },
       { kind: "slider", k: "max_megapixels", label: "At most", min: 4, max: 200, unit: " MP", when: on("super_resolution"), hint: "Large photos are enlarged less to stay under this" },
       { kind: "heading", label: "Engine and file" },
       {
