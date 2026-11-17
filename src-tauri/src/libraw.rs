@@ -583,6 +583,30 @@ mod tests {
         assert!(db[2] >= db[0] - 0.1, "LMMSE {:.1} dB vs RCD {:.1} dB on a noisy mosaic", db[2], db[0]);
     }
 
+    /// The black-level shift works on both of LibRaw's black levels (common and per-channel), either way, and
+    /// never takes a channel below zero: lowering used to do nothing for a camera that keeps its black per channel.
+    #[test]
+    fn black_shift_never_goes_below_zero() {
+        unsafe extern "C" {
+            fn ol_shift_black(black: *mut u32, cblack: *mut u32, off: i32) -> i32;
+        }
+        let shift = |mut black: u32, mut cb: [u32; 4], off: i32| {
+            let got = unsafe { ol_shift_black(&mut black, cb.as_mut_ptr(), off) };
+            (got, black, cb)
+        };
+        // a common black
+        assert_eq!(shift(100, [0; 4], 40), (40, 140, [0; 4]));
+        assert_eq!(shift(100, [0; 4], -40), (-40, 60, [0; 4]));
+        assert_eq!(shift(100, [0; 4], -500), (-100, 0, [0; 4]));
+        // a black kept per channel: lowering comes off the channels, down to the lowest one
+        assert_eq!(shift(0, [100, 110, 100, 120], 30), (30, 30, [100, 110, 100, 120]));
+        assert_eq!(shift(0, [100, 110, 100, 120], -50), (-50, 0, [50, 60, 50, 70]));
+        assert_eq!(shift(0, [100, 110, 100, 120], -150), (-100, 0, [0, 10, 0, 20]));
+        // a bit of each, and nothing to lower
+        assert_eq!(shift(20, [80, 90, 80, 100], -50), (-50, 0, [50, 60, 50, 70]));
+        assert_eq!(shift(0, [0; 4], -10), (0, 0, [0; 4]));
+    }
+
     /// Set OPTIXEL_TEST_RAW to a RAW file: its camera space round-trips the working space and keeps white
     /// white (the camera matrix keeps neutral neutral).
     #[test]
@@ -634,6 +658,13 @@ mod tests {
             assert!(max > 1.0 || name != &"unclip", "{name} kept nothing above white");
             assert!((b / a - 1.0).abs() < 0.05, "{name} changed the exposure of what is not blown: {:.4}", b / a);
         }
+        // the black point: raising it deepens the shadows, and lowering it never darkens (a camera whose black
+        // is 0, like a black-subtracted NEF, has nothing to lower)
+        let (up, down) = (super::develop_ex(&file, "", "", 64, 0.0, Some(1600)).unwrap().2, super::develop_ex(&file, "", "", -64, 0.0, Some(1600)).unwrap().2);
+        let base = super::develop(&file, "", "", Some(1600)).unwrap().2;
+        eprintln!("black offset +64: mean {:.4}, 0: {:.4}, -64: {:.4}", mean(&up), mean(&base), mean(&down));
+        assert!(mean(&up) < mean(&base) && mean(&down) >= mean(&base), "black offset moved the wrong way");
+
         let t = std::time::Instant::now();
         let (pw, ph, proxy) = super::develop(&file, "", "", Some(1600)).unwrap();
         eprintln!("proxy {pw}x{ph} in {:?}, mean {:.4}", t.elapsed(), mean(&proxy));

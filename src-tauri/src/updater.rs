@@ -259,6 +259,26 @@ pub fn fetch_github_release() -> Result<UpdateInfo, String> {
     })
 }
 
+fn update_download_dir() -> PathBuf {
+    dirs::download_dir().unwrap_or_else(|| {
+        dirs::data_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join(crate::APP_ID)
+            .join("updates")
+    })
+}
+
+fn percent_encode_query(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// Download an update asset file, saving it into the Downloads or cache directory and emitting progress events.
 pub fn download_update_file(
     app: &tauri::AppHandle,
@@ -287,12 +307,7 @@ pub fn download_update_file(
         return Err("Invalid filename for update asset".into());
     }
 
-    let download_dir = dirs::download_dir().unwrap_or_else(|| {
-        dirs::data_dir()
-            .unwrap_or_else(std::env::temp_dir)
-            .join(crate::APP_ID)
-            .join("updates")
-    });
+    let download_dir = update_download_dir();
     let _ = fs::create_dir_all(&download_dir);
 
     let target_file = download_dir.join(&clean_filename);
@@ -317,8 +332,13 @@ pub fn download_update_file(
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(0);
 
+    let _ = fs::remove_file(&part_file);
     let download_res = (|| -> Result<String, String> {
-        let mut file = fs::File::create(&part_file).map_err(es)?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part_file)
+            .map_err(es)?;
         let mut reader = resp.body_mut().as_reader();
         let mut sha_ctx = ring::digest::Context::new(&ring::digest::SHA256);
         let mut buf = vec![0u8; 128 * 1024];
@@ -417,13 +437,20 @@ pub fn download_update_file(
     Ok(target_file)
 }
 
-/// Open/execute the downloaded package or installer according to the host platform.
-pub fn launch_installer(path: &Path) -> Result<(), String> {
-    if !path.exists() || !path.is_file() {
-        return Err(format!("Installer file not found or is not a regular file: {}", path.display()));
+fn verify_installer_path(path: &Path, allowed_dir: &Path) -> Result<(PathBuf, String), String> {
+    let canon_dir = fs::canonicalize(allowed_dir)
+        .map_err(|_| "Update download directory does not exist".to_string())?;
+    let canon_path = fs::canonicalize(path)
+        .map_err(|_| format!("Installer file not found: {}", path.display()))?;
+
+    if !canon_path.starts_with(&canon_dir) {
+        return Err("Installer path must reside inside the update download directory".into());
+    }
+    if !canon_path.is_file() {
+        return Err(format!("Installer path is not a regular file: {}", path.display()));
     }
 
-    let ext = path
+    let ext = canon_path
         .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_lowercase())
@@ -435,6 +462,15 @@ pub fn launch_installer(path: &Path) -> Result<(), String> {
     if !valid_ext {
         return Err(format!("Unsupported or unsafe installer file type: .{ext}"));
     }
+
+    Ok((canon_path, ext))
+}
+
+/// Open/execute the downloaded package or installer according to the host platform.
+pub fn launch_installer(path: &Path) -> Result<(), String> {
+    let (canon_path, ext) = verify_installer_path(path, &update_download_dir())?;
+    let path = canon_path.as_path();
+    let _ = &ext;
 
     #[cfg(target_os = "macos")]
     {
@@ -707,7 +743,7 @@ pub fn verify_license_key(key: String) -> Result<LicenseStatus, String> {
         .build()
         .into();
 
-    let url = format!("{DEFAULT_ENTITLEMENT_ENDPOINT}?key={clean}");
+    let url = format!("{DEFAULT_ENTITLEMENT_ENDPOINT}?key={}", percent_encode_query(clean));
     match agent.get(&url).header("User-Agent", "Optixel-Studio").call() {
         Ok(mut resp) => {
             let body = resp.body_mut().read_to_string().map_err(es)?;
@@ -810,5 +846,33 @@ mod tests {
 
         let empty_status = verify_license_key("".into()).unwrap();
         assert!(!empty_status.valid);
+    }
+
+    #[test]
+    fn query_encoding_escapes_delimiters() {
+        assert_eq!(percent_encode_query("OPT-PRO_1.2~3"), "OPT-PRO_1.2~3");
+        assert_eq!(percent_encode_query("a&b=1#x y"), "a%26b%3D1%23x%20y");
+    }
+
+    #[test]
+    fn installer_path_confinement() {
+        let base = std::env::temp_dir().join(format!("optixel-updater-test-{}", std::process::id()));
+        let allowed = base.join("downloads");
+        let outside = base.join("outside");
+        let _ = fs::create_dir_all(&allowed);
+        let _ = fs::create_dir_all(&outside);
+
+        let good_dmg = allowed.join("Optixel.Studio_0.3.1_aarch64.dmg");
+        let bad_ext = allowed.join("evil.sh");
+        let outside_dmg = outside.join("evil.dmg");
+        fs::write(&good_dmg, b"dmg").unwrap();
+        fs::write(&bad_ext, b"sh").unwrap();
+        fs::write(&outside_dmg, b"dmg").unwrap();
+
+        assert!(verify_installer_path(&good_dmg, &allowed).is_ok());
+        assert!(verify_installer_path(&bad_ext, &allowed).is_err());
+        assert!(verify_installer_path(&outside_dmg, &allowed).is_err());
+
+        let _ = fs::remove_dir_all(&base);
     }
 }

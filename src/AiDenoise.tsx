@@ -6,6 +6,32 @@ import { PROFILES } from "./Auto";
 import { Btn, HUE, Icon, Panel, Slider } from "./controls";
 
 const hint = "mt-1 text-[10px] text-neutral-500";
+const badgeBase = "inline-block rounded border px-1.5 py-0.5 text-[9px] font-medium normal-case tracking-normal whitespace-nowrap";
+
+const TINT = {
+  amber: {
+    pill: `${badgeBase} border-[var(--tint-amber-border)] bg-[var(--tint-amber-bg)] text-[var(--tint-amber-text)]`,
+  },
+  cyan: {
+    pill: `${badgeBase} border-[var(--tint-cyan-border)] bg-[var(--tint-cyan-bg)] text-[var(--tint-cyan-text)]`,
+    box: "border-[var(--tint-cyan-border)] bg-[var(--tint-cyan-bg)]",
+    text: "text-[var(--tint-cyan-text)]",
+  },
+  emerald: {
+    pill: `${badgeBase} border-[var(--tint-emerald-border)] bg-[var(--tint-emerald-bg)] text-[var(--tint-emerald-text)]`,
+    box: "border-[var(--tint-emerald-border)] bg-[var(--tint-emerald-bg)] text-[var(--tint-emerald-text)]",
+    text: "text-[var(--tint-emerald-text)]",
+  },
+  violet: {
+    pill: `${badgeBase} border-[var(--tint-violet-border)] bg-[var(--tint-violet-bg)] text-[var(--tint-violet-text)]`,
+  },
+  red: {
+    box: "border-[var(--tint-red-border)] bg-[var(--tint-red-bg)] text-[var(--tint-red-text)]",
+  },
+  neutral: {
+    pill: `${badgeBase} border-neutral-700/60 bg-neutral-800 text-neutral-300`,
+  },
+} as const;
 
 type Transform = Dev["transform"];
 
@@ -72,7 +98,7 @@ function AiProgressBar({
           <span className="h-2 w-2 rounded-full bg-sky-400 animate-pulse shrink-0" />
           <span className="font-semibold text-neutral-100 truncate">{title}</span>
         </div>
-        <div className="tabular-nums font-mono font-bold text-sky-400 text-xs shrink-0">
+        <div className="tabular-nums font-mono font-bold text-[var(--tint-sky-text)] text-xs shrink-0">
           {isIndeterminate ? (
             <span className="text-[10px] font-normal text-neutral-400 animate-pulse">Initializing…</span>
           ) : (
@@ -117,7 +143,7 @@ function AiProgressBar({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded px-2 py-0.5 text-[10px] text-neutral-400 hover:text-red-400 hover:bg-neutral-900 border border-neutral-800 transition-colors"
+            className="rounded px-2 py-0.5 text-[10px] text-neutral-400 hover:text-[var(--tint-red-text)] hover:bg-neutral-900 border border-neutral-800 transition-colors"
             title="Cancel this AI operation"
           >
             ✕ Cancel
@@ -501,9 +527,7 @@ export function AiTab(p: {
       {msg && (
         <div
           className={`mx-3 mt-2 flex items-start justify-between gap-2 rounded border px-2.5 py-1.5 text-[10px] ${
-            msg.ok
-              ? "border-emerald-800/60 bg-emerald-950/30 text-emerald-300"
-              : "border-red-800/60 bg-red-950/30 text-red-300"
+            msg.ok ? TINT.emerald.box : TINT.red.box
           }`}
         >
           <span className="break-words">{msg.text}</span>
@@ -522,14 +546,14 @@ export function AiTab(p: {
       {sub === "tone" && (
       <Panel
         title={
-          <span className="flex items-center gap-1.5">
+          <span className="flex min-w-0 items-center gap-1.5">
             <span className={HUE.amber.text}>
               <Icon d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1" />
             </span>
-            <span>Tone & Color · Auto Adjust</span>
+            <span className="truncate">Tone & Color · Auto Adjust</span>
           </span>
         }
-        right={<span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-medium text-amber-300">Built-in 3D-LUT</span>}
+        right={<span className={TINT.amber.pill}>Built-in 3D-LUT</span>}
       >
         <p className="text-neutral-400 leading-relaxed">
           Sets white balance, exposure, tone and colour using an image-adaptive 3D-LUT model trained on photographers&apos; edits. Every slider stays editable.
@@ -570,23 +594,15 @@ export function AiTab(p: {
       {sub === "align" && (
       <Panel
         title={
-          <span className="flex items-center gap-1.5">
+          <span className="flex min-w-0 items-center gap-1.5">
             <span className={HUE.cyan.text}>
               <Icon d="M3 12h18M12 3v18M5 5l14 0 0 14-14 0z" />
             </span>
-            <span>Geometry · Auto Align</span>
+            <span className="truncate">Geometry · Auto Align</span>
           </span>
         }
         right={
-          <span
-            className={`rounded px-1.5 py-0.5 text-[9px] font-medium ${
-              alignModel
-                ? hasAlignment
-                  ? "bg-cyan-500/20 text-cyan-300"
-                  : "bg-neutral-800 text-neutral-300"
-                : "bg-amber-500/15 text-amber-300"
-            }`}
-          >
+          <span className={alignModel ? (hasAlignment ? TINT.cyan.pill : TINT.neutral.pill) : TINT.amber.pill}>
             {alignModel ? (hasAlignment ? `${tr.rotate.toFixed(1)}° / ${tr.vertical.toFixed(0)}` : "PerspectiveFields") : "Not installed"}
           </span>
         }
@@ -642,17 +658,17 @@ export function AiTab(p: {
             )}
 
             {alignInfo && (
-              <div className="mt-2 grid grid-cols-4 gap-1 rounded border border-cyan-900/50 bg-cyan-950/20 px-2 py-1.5 text-center text-[10px]">
+              <div className={`mt-2 grid grid-cols-4 gap-1 rounded border px-2 py-1.5 text-center text-[10px] ${TINT.cyan.box}`}>
                 <div>
                   <div className="text-[9px] uppercase text-neutral-500">Roll</div>
-                  <div className="font-mono font-semibold text-cyan-300">
+                  <div className={`font-mono font-semibold ${TINT.cyan.text}`}>
                     {alignInfo.roll_deg >= 0 ? "+" : ""}
                     {alignInfo.roll_deg.toFixed(2)}°
                   </div>
                 </div>
                 <div>
                   <div className="text-[9px] uppercase text-neutral-500">Pitch</div>
-                  <div className="font-mono font-semibold text-cyan-300">
+                  <div className={`font-mono font-semibold ${TINT.cyan.text}`}>
                     {alignInfo.pitch_deg >= 0 ? "+" : ""}
                     {alignInfo.pitch_deg.toFixed(2)}°
                   </div>
@@ -663,7 +679,7 @@ export function AiTab(p: {
                 </div>
                 <div>
                   <div className="text-[9px] uppercase text-neutral-500">Conf</div>
-                  <div className="font-mono font-semibold text-emerald-300">{Math.round(alignInfo.confidence * 100)}%</div>
+                  <div className={`font-mono font-semibold ${TINT.emerald.text}`}>{Math.round(alignInfo.confidence * 100)}%</div>
                 </div>
               </div>
             )}
@@ -735,23 +751,15 @@ export function AiTab(p: {
       {sub === "denoise" && (
       <Panel
         title={
-          <span className="flex items-center gap-1.5">
+          <span className="flex min-w-0 items-center gap-1.5">
             <span className={HUE.emerald.text}>
               <Icon d="M4 6h4v4H4zM10 6h4v4h-4zM16 6h4v4h-4zM4 14h4v4H4zM10 14h4v4h-4zM16 14h4v4h-4z" />
             </span>
-            <span>Detail · Neural Denoise</span>
+            <span className="truncate">Detail · Neural Denoise</span>
           </span>
         }
         right={
-          <span
-            className={`rounded px-1.5 py-0.5 text-[9px] font-medium ${
-              hasDenoised && denoiseEnabled
-                ? "bg-emerald-500/20 text-emerald-300"
-                : denoiseModel
-                ? "bg-neutral-800 text-neutral-300"
-                : "bg-amber-500/15 text-amber-300"
-            }`}
-          >
+          <span className={hasDenoised && denoiseEnabled ? TINT.emerald.pill : denoiseModel ? TINT.neutral.pill : TINT.amber.pill}>
             {hasDenoised ? (denoiseEnabled ? `Active · ${Math.round(strength)}%` : "Bypassed") : denoiseModel ? "Ready" : "Not installed"}
           </span>
         }
@@ -769,7 +777,7 @@ export function AiTab(p: {
                   onChange={toggleDenoise}
                   className="rounded border-neutral-700 text-sky-500 focus:ring-0"
                 />
-                <span className={`font-medium ${denoiseEnabled ? "text-emerald-300" : "text-neutral-500"}`}>
+                <span className={`font-medium ${denoiseEnabled ? TINT.emerald.text : "text-neutral-500"}`}>
                   {denoiseEnabled ? "AI Denoise layer enabled" : "AI Denoise layer bypassed"}
                 </span>
               </label>
@@ -839,16 +847,16 @@ export function AiTab(p: {
       {sub === "retouch" && (
       <Panel
         title={
-          <span className="flex items-center gap-1.5">
+          <span className="flex min-w-0 items-center gap-1.5">
             <span className={HUE.violet.text}>
               <Icon d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
             </span>
-            <span>Retouch &amp; Faces · Layers</span>
+            <span className="truncate">Retouch &amp; Faces · Layers</span>
           </span>
         }
         right={
           layerCount > 0 ? (
-            <span className="rounded bg-violet-500/20 px-1.5 py-0.5 text-[9px] font-medium text-violet-300">
+            <span className={TINT.violet.pill}>
               {layerCount} {layerCount === 1 ? "layer" : "layers"}
             </span>
           ) : null
@@ -917,8 +925,8 @@ export function AiTab(p: {
                 />
               </div>
               {p.selection && (
-                <div className="mt-2 rounded border border-emerald-800/50 bg-emerald-950/20 p-2">
-                  <div className="text-[10px] font-medium text-emerald-300">Selection ready — red area will be replaced</div>
+                <div className="mt-2 rounded border border-[var(--tint-emerald-border)] bg-[var(--tint-emerald-bg)] p-2">
+                  <div className={`text-[10px] font-medium ${TINT.emerald.text}`}>Selection ready — red area will be replaced</div>
                   <Slider label="Grow edge (px)" value={grow} min={0} max={30} def={6} onChange={setGrow} />
                   {generative && (
                     <input

@@ -594,3 +594,129 @@ input[type="range"].ol-range::-webkit-slider-thumb {
     box-shadow: 0 1px 2px rgba(217, 119, 6, 0.2);
   }
 }
+
+/* Theme-adaptive tinted badges & status readouts (WCAG AA >= 4.5:1 in light and dark modes) */
+:root {
+  --tint-amber-bg-light: #fef3c7;
+  --tint-amber-bg-dark: rgba(245, 158, 11, 0.15);
+  --tint-amber-text-light: #92400e;
+  --tint-amber-text-dark: #fcd34d;
+  --tint-amber-border-light: rgba(217, 119, 6, 0.45);
+  --tint-amber-border-dark: rgba(245, 158, 11, 0.35);
+
+  --tint-cyan-bg-light: #cffafe;
+  --tint-cyan-bg-dark: rgba(6, 182, 212, 0.18);
+  --tint-cyan-text-light: #155e75;
+  --tint-cyan-text-dark: #67e8f9;
+  --tint-cyan-border-light: rgba(8, 145, 178, 0.4);
+  --tint-cyan-border-dark: rgba(21, 94, 117, 0.55);
+
+  --tint-emerald-bg-light: #d1fae5;
+  --tint-emerald-bg-dark: rgba(16, 185, 129, 0.16);
+  --tint-emerald-text-light: #065f46;
+  --tint-emerald-text-dark: #6ee7b7;
+  --tint-emerald-border-light: rgba(5, 150, 105, 0.4);
+  --tint-emerald-border-dark: rgba(6, 95, 70, 0.6);
+
+  --tint-violet-bg-light: #ede9fe;
+  --tint-violet-bg-dark: rgba(139, 92, 246, 0.18);
+  --tint-violet-text-light: #5b21b6;
+  --tint-violet-text-dark: #c4b5fd;
+  --tint-violet-border-light: rgba(124, 58, 237, 0.35);
+  --tint-violet-border-dark: rgba(109, 40, 217, 0.45);
+
+  --tint-red-bg-light: #fee2e2;
+  --tint-red-bg-dark: rgba(127, 29, 29, 0.3);
+  --tint-red-text-light: #991b1b;
+  --tint-red-text-dark: #fca5a5;
+  --tint-red-border-light: rgba(220, 38, 38, 0.35);
+  --tint-red-border-dark: rgba(153, 27, 27, 0.6);
+
+  --tint-sky-text-light: #0369a1;
+  --tint-sky-text-dark: #38bdf8;
+
+  /* Default (dark) values for browsers without light-dark() */
+  --tint-amber-bg: var(--tint-amber-bg-dark);
+  --tint-amber-text: var(--tint-amber-text-dark);
+  --tint-amber-border: var(--tint-amber-border-dark);
+  --tint-cyan-bg: var(--tint-cyan-bg-dark);
+  --tint-cyan-text: var(--tint-cyan-text-dark);
+  --tint-cyan-border: var(--tint-cyan-border-dark);
+  --tint-emerald-bg: var(--tint-emerald-bg-dark);
+  --tint-emerald-text: var(--tint-emerald-text-dark);
+  --tint-emerald-border: var(--tint-emerald-border-dark);
+  --tint-violet-bg: var(--tint-violet-bg-dark);
+  --tint-violet-text: var(--tint-violet-text-dark);
+  --tint-violet-border: var(--tint-violet-border-dark);
+  --tint-red-bg: var(--tint-red-bg-dark);
+  --tint-red-text: var(--tint-red-text-dark);
+  --tint-red-border: var(--tint-red-border-dark);
+  --tint-sky-text: var(--tint-sky-text-dark);
+
+  @supports (color: light-dark(white, black)) {
+    --tint-amber-bg: light-dark(var(--tint-amber-bg-light), var(--tint-amber-bg-dark));
+    --tint-amber-text: light-dark(var(--tint-amber-text-light), var(--tint-amber-text-dark));
+    --tint-amber-border: light-dark(var(--tint-amber-border-light), var(--tint-amber-border-dark));
+    --tint-cyan-bg: light-dark(var(--tint-cyan-bg-light), var(--tint-cyan-bg-dark));
+    --tint-cyan-text: light-dark(var(--tint-cyan-text-light), var(--tint-cyan-text-dark));
+    --tint-cyan-border: light-dark(var(--tint-cyan-border-light), var(--tint-cyan-border-dark));
+    --tint-emerald-bg: light-dark(var(--tint-emerald-bg-light), var(--tint-emerald-bg-dark));
+    --tint-emerald-text: light-dark(var(--tint-emerald-text-light), var(--tint-emerald-text-dark));
+    --tint-emerald-border: light-dark(var(--tint-emerald-border-light), var(--tint-emerald-border-dark));
+    --tint-violet-bg: light-dark(var(--tint-violet-bg-light), var(--tint-violet-bg-dark));
+    --tint-violet-text: light-dark(var(--tint-violet-text-light), var(--tint-violet-text-dark));
+    --tint-violet-border: light-dark(var(--tint-violet-border-light), var(--tint-violet-border-dark));
+    --tint-red-bg: light-dark(var(--tint-red-bg-light), var(--tint-red-bg-dark));
+    --tint-red-text: light-dark(var(--tint-red-text-light), var(--tint-red-text-dark));
+    --tint-red-border: light-dark(var(--tint-red-border-light), var(--tint-red-border-dark));
+    --tint-sky-text: light-dark(var(--tint-sky-text-light), var(--tint-sky-text-dark));
+  }
+}
+
+:root[data-theme="light"],
+[data-theme="light"],
+:root[data-theme="slate_light"],
+[data-theme="slate_light"],
+:root[data-theme="warm_light"],
+[data-theme="warm_light"],
+:root[data-theme="nordic_light"],
+[data-theme="nordic_light"] {
+  --tint-amber-bg: var(--tint-amber-bg-light);
+  --tint-amber-text: var(--tint-amber-text-light);
+  --tint-amber-border: var(--tint-amber-border-light);
+  --tint-cyan-bg: var(--tint-cyan-bg-light);
+  --tint-cyan-text: var(--tint-cyan-text-light);
+  --tint-cyan-border: var(--tint-cyan-border-light);
+  --tint-emerald-bg: var(--tint-emerald-bg-light);
+  --tint-emerald-text: var(--tint-emerald-text-light);
+  --tint-emerald-border: var(--tint-emerald-border-light);
+  --tint-violet-bg: var(--tint-violet-bg-light);
+  --tint-violet-text: var(--tint-violet-text-light);
+  --tint-violet-border: var(--tint-violet-border-light);
+  --tint-red-bg: var(--tint-red-bg-light);
+  --tint-red-text: var(--tint-red-text-light);
+  --tint-red-border: var(--tint-red-border-light);
+  --tint-sky-text: var(--tint-sky-text-light);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]):not([data-theme="slate"]):not([data-theme="oled"]):not([data-theme="warm"]):not([data-theme="nordic"]):not([data-theme="cyber"]):not([data-theme="emerald"]),
+  :root[data-theme="system"] {
+    --tint-amber-bg: var(--tint-amber-bg-light);
+    --tint-amber-text: var(--tint-amber-text-light);
+    --tint-amber-border: var(--tint-amber-border-light);
+    --tint-cyan-bg: var(--tint-cyan-bg-light);
+    --tint-cyan-text: var(--tint-cyan-text-light);
+    --tint-cyan-border: var(--tint-cyan-border-light);
+    --tint-emerald-bg: var(--tint-emerald-bg-light);
+    --tint-emerald-text: var(--tint-emerald-text-light);
+    --tint-emerald-border: var(--tint-emerald-border-light);
+    --tint-violet-bg: var(--tint-violet-bg-light);
+    --tint-violet-text: var(--tint-violet-text-light);
+    --tint-violet-border: var(--tint-violet-border-light);
+    --tint-red-bg: var(--tint-red-bg-light);
+    --tint-red-text: var(--tint-red-text-light);
+    --tint-red-border: var(--tint-red-border-light);
+    --tint-sky-text: var(--tint-sky-text-light);
+  }
+}

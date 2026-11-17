@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { Fragment, ReactNode, useEffect, useState } from "react";
+import { Fragment, ReactNode, useEffect, useRef, useState } from "react";
 import { api, Develop as Dev, IccProfileEntry, Proof, RawInfo, setPath } from "./api";
 import { Btn, Panel, Seg, Slider } from "./controls";
 
@@ -344,171 +344,213 @@ export function ProofPanel(p: { proof: Proof; setProof: (p: Proof) => void }) {
   );
 }
 
-const DEMOSAIC_ALGOS: [string, string][] = [
-  ["rcd", "RCD — Ratio Corrected (General Sharpness)"],
-  ["amaze", "AMaZE — Low-ISO Maze Artifact Suppression"],
-  ["lmmse", "LMMSE — High-ISO Astro / Night Photography"],
-  ["ahd", "AHD — Adaptive Homogeneity-Directed"],
-  ["dcb", "DCB — Detail-Preserving Interpolation"],
-  ["dht", "DHT — Directional Homogeneity"],
-  ["aahd", "AAHD — Enhanced Adaptive AHD"],
-  ["ppg", "PPG — Patterned Pixel Grouping"],
-  ["vng", "VNG — Variable Number of Gradients"],
-  ["linear", "Bilinear — Fast Linear"],
+const RAW_DEFAULT = { engine: "", demosaic: "", highlights: "", black_offset: 0, raw_denoise: 0 };
+
+// The ids are what the catalog, the .olxmp sidecars and the MCP tools store: only the labels are for people.
+const DEMOSAICS: [string, string][] = [
+  ["rcd", "RCD — crisp, fast all-rounder"],
+  ["amaze", "AMaZE — fine detail"],
+  ["lmmse", "LMMSE — noise-adaptive"],
+  ["ahd", "AHD — classic, balanced"],
+  ["dcb", "DCB — detail-preserving, slower"],
+  ["dht", "DHT — fine lines, slow"],
+  ["aahd", "AAHD — fewest colour artefacts, slowest"],
+  ["ppg", "PPG — fast"],
+  ["vng", "VNG — soft, slow"],
+  ["linear", "Bilinear — fastest, softest"],
 ];
+// An X-Trans sensor has no Bayer demosaic: LibRaw runs Markesteijn (1 pass for ppg, 3 otherwise), or its own vng / linear
+const XTRANS_DEMOSAICS: [string, string][] = [["ppg", "Markesteijn 1-pass — fast"], ...DEMOSAICS.filter(([id]) => id === "vng" || id === "linear")];
 
 const HIGHLIGHT_MODES: [string, string][] = [
-  ["clip", "Clip — Standard White Clipping"],
-  ["unclip", "Unclip — Raw Unclipped Channels"],
-  ["blend", "Blend — Multi-Channel Highlight Blend"],
-  ["rebuild", "Rebuild — Multi-Channel Highlight Recovery"],
+  ["clip", "Clip — blown areas go white"],
+  ["unclip", "Unclip — as recorded, blown areas go pink"],
+  ["blend", "Blend — follow the channels that kept detail"],
+  ["rebuild", "Rebuild — reconstruct from the surroundings"],
 ];
 
-/** Camera RAW Engine (LibRaw C++), Multi-Algorithm Demosaicing (RCD / AMaZE / LMMSE),
- *  Sensor Optical Black-Point Calibration, Highlight Reconstruction & MakerNotes Telemetry. */
+const selectCls = "w-full rounded border border-neutral-700/70 bg-neutral-800 px-2 py-1 text-[11px] text-neutral-100 outline-none";
+
+/** A slider that commits on release: every RAW setting is a fresh decode of the photo, so a drag must not decode per tick.
+ *  The release is caught on the window, so a pointer let go outside the slider still ends the drag. */
+function CommitSlider(p: Parameters<typeof Slider>[0]) {
+  const [drag, setDrag] = useState<number | null>(null);
+  const dragged = useRef<number | null>(null); // `drag`, for the release handler
+  const down = useRef(false);
+  const commit = useRef(p.onChange);
+  commit.current = p.onChange;
+  const press = () => {
+    down.current = true;
+    const release = () => {
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+      down.current = false;
+      if (dragged.current != null) commit.current(dragged.current);
+      dragged.current = null;
+      setDrag(null);
+    };
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+  };
+  return (
+    <div onPointerDown={press}>
+      <Slider
+        {...p}
+        value={drag ?? p.value}
+        onChange={(v) => {
+          if (!down.current) return p.onChange(v); // a key press or a double-click reset: no drag to wait for
+          dragged.current = v;
+          setDrag(v);
+        }}
+      />
+    </div>
+  );
+}
+
+/** Camera RAW: which decoder reads the sensor data (built-in, or LibRaw with our C++ demosaics) and its demosaic,
+ *  highlight recovery, black point and sensor denoise; plus what the camera recorded (sensor, levels, AF points).
+ *  Only the camera data for a file that isn't a RAW (a Nikon JPEG still carries its shutter count). */
 export function RawEnginePanel(
   p: WholeProps & {
     rawInfo: RawInfo | null;
     showAfOverlay: boolean;
     setShowAfOverlay: (v: boolean) => void;
+    isRaw: boolean;
   },
 ) {
   const { dev, change } = p;
-  const raw = dev.raw ?? { engine: "", demosaic: "", highlights: "", black_offset: 0, raw_denoise: 0 };
-  const setRaw = (patch: Partial<typeof raw>, label: string) => {
-    const next = { ...raw, ...patch };
-    // Automatically enable LibRaw C++ engine when picking a pro demosaic, highlight mode, black offset, or linear denoise
-    if (
-      (patch.demosaic && patch.demosaic !== "") ||
-      (patch.highlights && patch.highlights !== "" && patch.highlights !== "clip") ||
-      (patch.black_offset != null && patch.black_offset !== 0) ||
-      (patch.raw_denoise != null && patch.raw_denoise > 0)
-    ) {
-      if (!next.engine) next.engine = "libraw";
-    }
-    change({ ...dev, raw: next }, label, label);
-  };
-
+  const raw = { ...RAW_DEFAULT, ...dev.raw };
+  // what `decode_raw` (develop.rs) does: any setting at all decodes with LibRaw, whatever `engine` says
+  const studio = raw.engine === "libraw" || !!raw.demosaic || !!raw.highlights || raw.black_offset !== 0 || raw.raw_denoise > 0;
   const info = p.rawInfo;
+  const xtrans = !!info?.is_xtrans;
+  const setRaw = (patch: Partial<typeof RAW_DEFAULT>, label: string) => change({ ...dev, raw: { ...raw, ...patch, engine: "libraw" } }, label, label);
+  const builtIn = () => change({ ...dev, raw: RAW_DEFAULT }, "RAW decoder: built-in");
+
+  // only what the file has: a JPEG's shutter count comes without a sensor, so no zero levels or CFA badge
+  const levels = (v: number[]) => (new Set(v).size === 1 ? `${v[0]}` : v.join(" / "));
+  const rows = info
+    ? ([
+        ["Sensor", info.raw_width > 0 ? `${info.raw_width}×${info.raw_height} · ${((info.raw_width * info.raw_height) / 1e6).toFixed(1)} MP` : ""],
+        // 0 is a black-subtracted file, or a DNG that keeps its black in a pattern this doesn't read: say nothing
+        ["Black level", info.black_levels.some((b) => b > 0) ? `${levels(info.black_levels)} ADU` : ""],
+        ["White level", info.white_level > 0 ? `${info.white_level} ADU` : ""],
+        ["As-shot WB", info.cam_wb[1] > 0 ? `R ${(info.cam_wb[0] / info.cam_wb[1]).toFixed(2)} · B ${(info.cam_wb[2] / info.cam_wb[1]).toFixed(2)}` : ""],
+        ["Shutter count", info.shutter_count > 0 ? `${info.shutter_count.toLocaleString()} actuations` : ""],
+        ["Lens serial", info.lens_serial],
+        ["Body serial", info.body_serial],
+        ["Focus distance", info.focus_distance_m > 0 ? `${info.focus_distance_m.toFixed(2)} m` : ""],
+      ] as [string, string][]).filter(([, v]) => v)
+    : [];
+  const afCount = info?.af_points.length ?? 0;
+  if (!p.isRaw && !rows.length && !afCount) return null;
+  // the most the black point can be lowered: ol_shift_black() stops at the camera's lowest channel level (what `black_levels` reports)
+  const lowestBlack = info && info.raw_width > 0 ? Math.min(256, ...info.black_levels) : 256;
+
+  const aiMade = !!dev.ai_denoise?.enabled || !!dev.ai_removals?.length;
 
   return (
     <Panel
-      title="Camera RAW & Optical Calibration"
+      title={p.isRaw ? "Camera RAW" : "Camera data"}
       open={false}
       right={
-        <button
-          className="text-[10px] font-normal normal-case text-neutral-500 hover:text-neutral-200"
-          onClick={() =>
-            change(
-              { ...dev, raw: { engine: "", demosaic: "", highlights: "", black_offset: 0, raw_denoise: 0 } },
-              "Reset RAW engine",
-            )
-          }
-        >
-          reset
-        </button>
+        p.isRaw &&
+        studio && (
+          <button className="text-[10px] font-normal normal-case text-neutral-500 hover:text-neutral-200" onClick={builtIn} title="Back to the built-in decoder with no RAW options">
+            reset
+          </button>
+        )
       }
     >
-      <div className="mb-1 text-[10px] text-neutral-400">RAW Pipeline Engine</div>
-      <Seg
-        options={[
-          ["", "Auto"],
-          ["libraw", "LibRaw C++ Studio"],
-        ]}
-        value={raw.engine || ""}
-        onChange={(engine) => setRaw({ engine }, "RAW engine")}
-      />
+      {p.isRaw && (
+        <>
+          <div className="mb-0.5 text-[10px] uppercase tracking-wider text-neutral-500">Decoder</div>
+          <Seg
+            options={[
+              ["", "Built-in"],
+              ["libraw", "Studio (LibRaw)"],
+            ]}
+            value={studio ? "libraw" : ""}
+            onChange={(e) => (e ? setRaw({}, "RAW decoder: Studio") : builtIn())}
+          />
+          <p className={hint}>
+            {studio
+              ? "Studio decodes in wide-gamut Rec.2020 with the options below; colour and highlights differ from the built-in decode."
+              : "Built-in: fast, highlights rolled into white. Any option below switches to Studio."}
+          </p>
 
-      <div className={sub}>Demosaicing Algorithm</div>
-      <select
-        className="mb-1.5 w-full rounded bg-neutral-800 px-2 py-1 text-[11px] text-neutral-100 outline-none border border-neutral-700/70"
-        value={raw.demosaic || "rcd"}
-        onChange={(e) => setRaw({ demosaic: e.target.value, engine: "libraw" }, `Demosaic: ${e.target.value.toUpperCase()}`)}
-      >
-        {DEMOSAIC_ALGOS.map(([id, label]) => (
-          <option key={id} value={id}>
-            {label}
-          </option>
-        ))}
-      </select>
+          <div className={sub}>Demosaic</div>
+          <select
+            aria-label="Demosaic algorithm"
+            className={selectCls}
+            value={(xtrans ? XTRANS_DEMOSAICS : DEMOSAICS).some(([id]) => id === raw.demosaic) ? raw.demosaic : ""}
+            onChange={(e) => setRaw({ demosaic: e.target.value }, `Demosaic: ${e.target.value.toUpperCase() || "default"}`)}
+          >
+            <option value="">Default ({studio ? (xtrans ? "Markesteijn 3-pass" : "AHD") : "built-in PPG"})</option>
+            {(xtrans ? XTRANS_DEMOSAICS : DEMOSAICS).map(([id, label]) => (
+              <option key={id} value={id}>
+                {label}
+              </option>
+            ))}
+          </select>
 
-      <div className={sub}>Highlight Reconstruction</div>
-      <select
-        className="mb-2 w-full rounded bg-neutral-800 px-2 py-1 text-[11px] text-neutral-100 outline-none border border-neutral-700/70"
-        value={raw.highlights || "clip"}
-        onChange={(e) => setRaw({ highlights: e.target.value, engine: "libraw" }, `Highlight recovery: ${e.target.value}`)}
-      >
-        {HIGHLIGHT_MODES.map(([id, label]) => (
-          <option key={id} value={id}>
-            {label}
-          </option>
-        ))}
-      </select>
+          <div className={sub}>Highlight recovery</div>
+          <select
+            aria-label="Highlight recovery"
+            className={selectCls}
+            value={raw.highlights || "clip"}
+            onChange={(e) => setRaw({ highlights: e.target.value === "clip" ? "" : e.target.value }, `Highlights: ${e.target.value}`)}
+          >
+            {HIGHLIGHT_MODES.map(([id, label]) => (
+              <option key={id} value={id}>
+                {label}
+              </option>
+            ))}
+          </select>
+          {raw.highlights && <p className={hint}>Keeps the highlights above white: bring them back with Exposure or Highlights.</p>}
 
-      <Slider
-        label="Optical Black Offset"
-        value={raw.black_offset ?? 0}
-        def={0}
-        min={-256}
-        max={256}
-        step={1}
-        onChange={(v) => setRaw({ black_offset: Math.round(v) }, "Optical black offset")}
-      />
-      <Slider
-        label="Linear Sensor Denoise"
-        value={raw.raw_denoise ?? 0}
-        def={0}
-        min={0}
-        max={100}
-        step={1}
-        onChange={(v) => setRaw({ raw_denoise: Math.round(v) }, "RAW sensor denoise")}
-      />
+          <div className="mt-2">
+            <CommitSlider
+              label="Black point"
+              value={raw.black_offset}
+              def={0}
+              min={-lowestBlack}
+              max={256}
+              step={1}
+              format={(v) => (v > 0 ? "+" : "") + v}
+              onChange={(v) => setRaw({ black_offset: Math.round(v) }, "Black point")}
+            />
+            <CommitSlider label="Sensor denoise" value={raw.raw_denoise} def={0} min={0} max={100} step={1} format={(v) => `${v}%`} onChange={(v) => setRaw({ raw_denoise: Math.round(v) }, "Sensor denoise")} />
+          </div>
+          <p className={hint}>Black point: + deepens the shadows, − lowers the camera's black level. Sensor denoise trades fine detail for less noise before colours are mixed: 25–50 % suits high-ISO files.</p>
+          <p className={hint}>The fit-to-screen preview is binned for speed, so it has no demosaic: judge the demosaic and sensor denoise at 100 % zoom (exports use the full decode).</p>
+          {aiMade && <p className="mt-1 text-[10px] text-amber-500">AI denoise and removals keep the decode they were made on: run them again after changing the decoder.</p>}
+        </>
+      )}
 
-      {info && (
+      {(rows.length > 0 || afCount > 0) && (
         <div className="mt-2.5 space-y-1.5 rounded border border-neutral-800 bg-neutral-950/80 p-2 text-[10px]">
-          <div className="flex items-center justify-between border-b border-neutral-800/80 pb-1 font-semibold text-neutral-300">
-            <span>Sensor & MakerNotes (C++)</span>
-            <span className="rounded bg-sky-950/80 px-1.5 py-0.2 font-mono text-[9px] text-sky-300 border border-sky-800/50">
-              {info.is_xtrans ? "X-Trans 6×6" : info.cfa_pattern || "Bayer"}
-            </span>
+          <div className="flex items-center justify-between gap-2 border-b border-neutral-800/80 pb-1 font-semibold text-neutral-300">
+            <span className="truncate">{info?.camera_model || "Camera data"}</span>
+            {info?.cfa_pattern && (
+              <span className="shrink-0 rounded border border-sky-800/50 bg-sky-950/80 px-1.5 font-mono text-[9px] text-sky-300">{info.is_xtrans ? "X-Trans 6×6" : info.cfa_pattern}</span>
+            )}
           </div>
           <div className="grid grid-cols-[92px_1fr] gap-x-2 gap-y-0.5 text-neutral-400">
-            <span>Optical Black</span>
-            <span className="font-mono text-neutral-200">{info.black_levels.join(" / ")} ADU</span>
-            <span>White Level</span>
-            <span className="font-mono text-neutral-200">{info.white_level} ADU</span>
-            {info.shutter_count > 0 && (
-              <>
-                <span>Shutter Count</span>
-                <span className="font-mono text-emerald-300">{info.shutter_count.toLocaleString()} actuations</span>
-              </>
-            )}
-            {info.lens_serial && (
-              <>
-                <span>Lens Serial</span>
-                <span className="font-mono text-neutral-200 truncate">{info.lens_serial}</span>
-              </>
-            )}
-            {info.body_serial && (
-              <>
-                <span>Body Serial</span>
-                <span className="font-mono text-neutral-200 truncate">{info.body_serial}</span>
-              </>
-            )}
-            {info.focus_distance_m > 0 && (
-              <>
-                <span>Focus Distance</span>
-                <span className="font-mono text-neutral-200">{info.focus_distance_m.toFixed(2)} m</span>
-              </>
-            )}
+            {rows.map(([label, value]) => (
+              <Fragment key={label}>
+                <span>{label}</span>
+                <span className={`truncate font-mono ${label === "Shutter count" ? "text-emerald-300" : "text-neutral-200"}`}>{value}</span>
+              </Fragment>
+            ))}
           </div>
-          {info.af_points.length > 0 && (
-            <div className="pt-1 border-t border-neutral-800/80 flex items-center justify-between">
+          {info && afCount > 0 && (
+            <div className="flex items-center justify-between border-t border-neutral-800/80 pt-1">
               <span className="text-neutral-400">
-                Active AF Points ({info.af_points.filter((a) => a.active).length}/{info.af_points.length})
+                Active AF points ({info.af_points.filter((a) => a.active).length}/{afCount})
               </span>
               <Btn active={p.showAfOverlay} onClick={() => p.setShowAfOverlay(!p.showAfOverlay)}>
-                {p.showAfOverlay ? "Hide AF Overlay" : "Show AF Points"}
+                {p.showAfOverlay ? "Hide AF overlay" : "Show AF points"}
               </Btn>
             </div>
           )}

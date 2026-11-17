@@ -76,6 +76,10 @@ pub struct Develop {
 /// - `highlights`: "" (clip) | clip | unclip (as recorded: the channels clip at different levels, so blown
 ///   areas go pink) | blend (blown channels follow the unclipped ones) | rebuild (from their surroundings).
 ///   All but clip keep the highlights above white, for Exposure and Highlights to bring back.
+/// - `black_offset`: ADU shifted off the camera's black level (+ deepens the shadows), never below zero.
+/// - `raw_denoise`: 0..100, noise reduction on the demosaiced sensor data before the colour matrix.
+///   The proxy is binned to half size, so it has no demosaic (it shows at 100 % zoom and in exports) and its
+///   denoise runs on the binned data.
 /// ponytail: AI denoise and AI removals made before these change keep the old decode: run them again.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[serde(default)]

@@ -40,6 +40,11 @@ void ol_demosaic_bayer_lmmse(
     float* out_rgb
 );
 
+/// Shifts LibRaw's black level (`black` plus the per-channel `cblack[0..3]`) by `off` ADU, never below zero on
+/// any channel: raising and lowering both work, whichever of the two the camera keeps its black in. Returns
+/// the shift applied (`off`, or less when a channel would go negative).
+int ol_shift_black(unsigned* black, unsigned* cblack, int off);
+
 /// Linear sensor denoising (Anscombe-stabilized bilateral + hot-pixel impulse suppression), run by
 /// ol_raw.cpp on the demosaiced camera RGB just before LibRaw's colour matrix.
 void ol_raw_sensor_denoise_linear(
