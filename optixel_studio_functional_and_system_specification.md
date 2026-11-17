@@ -143,7 +143,7 @@ All tonal math executes in a 32-bit floating-point linear working space before d
   * **Vibrance & Saturation (`-100` to `+100`):** Oklch chroma scaling where Vibrance applies a bell-curve weight that protects already-saturated hues and portrait skin-tone hue angles (`25°–55°`).
 * **Native C++ RAW Processing & Multi-Algorithm Demosaicing (`FR-RAW-NATIVE`):**
   * Embedded **LibRaw** C++ decoding for proprietary compressed formats: Canon `.CR3` (C-RAW), Nikon High-Efficiency `.NEF`, Sony uncompressed/lossless `.ARW`, and Fujifilm X-Trans 6x6 arrays.
-  * **Pro Demosaic Engine:** Switchable demosaicing algorithms: **RCD** (Ratio Corrected Demosaicing for maximum sharpness), **AMaZE** (Aliasing Minimization for low-ISO landscapes), **LMMSE** (directional noise-adaptive demosaicing for high-ISO and astrophotography), AHD, Linear, VNG, and DCB.
+  * **Pro Demosaic Engine:** Switchable demosaicing algorithms: **RCD** (Ratio Corrected Demosaicing for maximum sharpness), **AMaZE** (Aliasing Minimization for low-ISO landscapes), **LMMSE** (RCD's green with noise-adaptive linear-MMSE filtering of the colour differences, for cleaner colour at high ISO), AHD, Linear, VNG, and DCB.
   * **Optical Calibration & Highlight Recovery:** Reads per-channel optical black-point borders from the physical sensor borders and executes multi-channel highlight reconstruction before tonemapping.
 * **Studio Color Management & Printer Soft-Proofing (`FR-COLOR-STUDIO`):**
   * **LittleCMS 2 (`lcms2`)** pipeline supporting 32-bit floating-point **ProPhoto RGB** and **ACEScg** working color spaces.

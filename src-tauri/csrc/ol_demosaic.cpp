@@ -1,6 +1,7 @@
 // Clean-room MIT implementations of:
-// - RCD (Ratio Corrected Demosaicing), LMMSE (Zhang & Wu 2005) and an AMaZE-style demosaic, for Bayer
-//   sensors (LibRaw keeps X-Trans, black levels and highlight recovery)
+// - RCD (Ratio Corrected Demosaicing), LMMSE (RCD's green with the colour differences filtered by a local linear
+//   MMSE estimator) and an AMaZE-style demosaic, for Bayer sensors (LibRaw keeps X-Trans, black levels and
+//   highlight recovery)
 // - Linear sensor denoising, on camera RGB before the colour matrix
 // - RGB parade & waveform scope bins, focus peaking (on the eyes when there are faces), 16-bit guided filter
 
@@ -62,16 +63,6 @@ inline void decode_cfa_pat(int cfa_pattern, int pat[2][2]) {
     pat[0][0] = 1; pat[0][1] = 2; pat[1][0] = 0; pat[1][1] = 1;
     break;
   }
-}
-
-inline float cfa_at(const float *cfa, size_t w, size_t h, ptrdiff_t r, ptrdiff_t c) {
-  if (r < 0) r = -r;
-  else if (r >= (ptrdiff_t)h) r = 2 * (ptrdiff_t)h - 2 - r;
-  if (c < 0) c = -c;
-  else if (c >= (ptrdiff_t)w) c = 2 * (ptrdiff_t)w - 2 - c;
-  r = std::max<ptrdiff_t>(0, std::min<ptrdiff_t>((ptrdiff_t)h - 1, r));
-  c = std::max<ptrdiff_t>(0, std::min<ptrdiff_t>((ptrdiff_t)w - 1, c));
-  return cfa[(size_t)r * w + (size_t)c];
 }
 
 // Fill the outer `border` pixels with bilinear interpolation so the interior fast path can
@@ -178,6 +169,172 @@ void complete_rb_from_green(const float *cfa, size_t w, size_t h, const int pat[
   });
 }
 
+// ----------------------------------------------------------------------------------------------------------------
+// LMMSE chroma filter (see ol_demosaic_bayer_lmmse)
+// ----------------------------------------------------------------------------------------------------------------
+
+constexpr size_t kLeeR = 3; // 7 x 7 windows
+// The filter works on t(x) = sqrt(x + kLeeOffset): there shot noise is about the same everywhere, so one noise variance
+// per plane fits, and the slope stays finite at black.
+constexpr float kLeeOffset = 0.003f;
+// Noise variance = kLeeGain x the kLeePercentile flattest 8x8 blocks' mean squared second difference / 36 (what white
+// noise of that variance scores), less kLeeFloor, the finest texture of a noise-free photo: not noise, so not smoothed.
+// The second difference (Immerkaer's 3x3 mask) is zero on ramps and nearly so on gentle curves, so smooth gradients do not
+// read as noise; the gain is large because RCD's chroma noise is correlated between neighbours, which it sees little of.
+// Blocks clipped to black or white are flat without being clean, so only those with green between kLeeDark and kLeeBright
+// count (and at least kLeeBlocks of them: a night frame has none to judge by, and is left alone).
+constexpr float kLeePercentile = 0.05f, kLeeGain = 18.f, kLeeFloor = 4e-6f, kLeeDark = 0.01f, kLeeBright = 0.9f;
+constexpr size_t kLeeBlocks = 64;
+
+template <typename F>
+void parallel_each(size_t n, F &&fn) {
+  std::vector<std::thread> pool;
+  for (size_t i = 1; i < n; ++i) pool.emplace_back([&fn, i] { fn(i); });
+  if (n) fn(0);
+  for (auto &t : pool) t.join();
+}
+
+// Streams rows [y0, y1) of an interleaved RGB frame from top to bottom, keeping the 2R+1 rows a window needs, and calls
+// `row(y, tg, d, mean, var)` for each one: in the square-root domain, green (w values), the colour differences R-G and
+// B-G (d[0], d[1]) and their 7x7 window means and variances (w values each).
+template <typename Row>
+void lee_rows(const float *rgb, size_t w, size_t h, size_t y0, size_t y1, Row &&row) {
+  constexpr size_t R = kLeeR, N = 2 * R + 1;
+  // per ring slot: green, the two differences, and their horizontal window sums of d and d^2
+  std::vector<float> ring(N * 7 * w), stat(4 * w), inv_cols(w);
+  std::vector<double> col(4 * w, 0.0); // the vertical sums of those over the rows of the window
+  auto TG = [&](size_t y) { return &ring[(y % N) * 7 * w]; };
+  auto D = [&](size_t y, int p) { return &ring[((y % N) * 7 + 1 + p) * w]; };
+  auto S1 = [&](size_t y, int p) { return &ring[((y % N) * 7 + 3 + p) * w]; };
+  auto S2 = [&](size_t y, int p) { return &ring[((y % N) * 7 + 5 + p) * w]; };
+  for (size_t x = 0; x < w; ++x) inv_cols[x] = 1.f / (float)(std::min(w - 1, x + R) - (x > R ? x - R : 0) + 1);
+
+  auto load = [&](size_t y) {
+    const float *p = rgb + y * w * 3;
+    float *tg = TG(y);
+    for (size_t x = 0; x < w; ++x) {
+      float g = std::sqrt(std::max(p[3 * x + 1], 0.f) + kLeeOffset);
+      tg[x] = g;
+      D(y, 0)[x] = std::sqrt(std::max(p[3 * x], 0.f) + kLeeOffset) - g;
+      D(y, 1)[x] = std::sqrt(std::max(p[3 * x + 2], 0.f) + kLeeOffset) - g;
+    }
+    for (int pl = 0; pl < 2; ++pl) { // running window sums along the row, clamped at its ends
+      const float *d = D(y, pl);
+      float *s1 = S1(y, pl), *s2 = S2(y, pl);
+      double a = 0, b = 0;
+      for (size_t k = 0; k <= R && k < w; ++k) a += d[k], b += (double)d[k] * d[k];
+      for (size_t x = 0; x < w; ++x) {
+        s1[x] = (float)a, s2[x] = (float)b;
+        if (x + R + 1 < w) a += d[x + R + 1], b += (double)d[x + R + 1] * d[x + R + 1];
+        if (x >= R) a -= d[x - R], b -= (double)d[x - R] * d[x - R];
+      }
+    }
+  };
+  auto slide = [&](size_t y, double sign) { // add (1) or remove (-1) row y's window sums to the vertical ones
+    for (int pl = 0; pl < 2; ++pl) {
+      const float *s1 = S1(y, pl), *s2 = S2(y, pl);
+      double *c1 = &col[pl * w], *c2 = &col[(2 + pl) * w];
+      for (size_t x = 0; x < w; ++x) c1[x] += sign * s1[x], c2[x] += sign * s2[x];
+    }
+  };
+
+  for (size_t y = y0 > R ? y0 - R : 0; y <= std::min(h - 1, y0 + R); ++y) load(y), slide(y, 1);
+  for (size_t y = y0; y < y1; ++y) {
+    float inv_rows = 1.f / (float)(std::min(h - 1, y + R) - (y > R ? y - R : 0) + 1);
+    const float *mean[2] = {&stat[0], &stat[w]}, *var[2] = {&stat[2 * w], &stat[3 * w]};
+    for (int pl = 0; pl < 2; ++pl) {
+      const double *c1 = &col[pl * w], *c2 = &col[(2 + pl) * w];
+      float *m = &stat[pl * w], *v = &stat[(2 + pl) * w];
+      for (size_t x = 0; x < w; ++x) {
+        float inv = inv_rows * inv_cols[x], mu = (float)c1[x] * inv;
+        m[x] = mu;
+        v[x] = std::max((float)c2[x] * inv - mu * mu, 0.f);
+      }
+    }
+    const float *d[2] = {D(y, 0), D(y, 1)};
+    row(y, TG(y), d, mean, var);
+    if (y + 1 < y1) {
+      if (y >= R) slide(y - R, -1); // before the new row takes its ring slot
+      if (y + R + 1 < h) load(y + R + 1), slide(y + R + 1, 1);
+    }
+  }
+}
+
+// The noise variance of both difference planes, from a few bands of the frame (all of a small one).
+void lee_noise(const float *rgb, size_t w, size_t h, float nv[2]) {
+  constexpr size_t M = 4, B = 8, BANDS = 8, ROWS = 40;
+  size_t nb = h > 600 ? BANDS : 1;
+  std::vector<std::vector<float>> blocks(nb * 2);
+  parallel_each(nb, [&](size_t b) {
+    size_t y0 = nb == 1 ? 0 : (h - ROWS) * b / (nb - 1), y1 = nb == 1 ? h : y0 + ROWS;
+    y0 = std::max(y0, M), y1 = std::min(y1, h - M);
+    if (y1 < y0 + B) return;
+    size_t rows = y1 - y0 + 2; // a row of context on each side
+    std::vector<float> d[2] = {std::vector<float>(rows * w), std::vector<float>(rows * w)}, green(rows * w);
+    for (size_t r = 0; r < rows; ++r) {
+      const float *p = rgb + (y0 - 1 + r) * w * 3;
+      for (size_t x = 0; x < w; ++x) {
+        float g = std::sqrt(std::max(p[3 * x + 1], 0.f) + kLeeOffset);
+        green[r * w + x] = p[3 * x + 1];
+        d[0][r * w + x] = std::sqrt(std::max(p[3 * x], 0.f) + kLeeOffset) - g;
+        d[1][r * w + x] = std::sqrt(std::max(p[3 * x + 2], 0.f) + kLeeOffset) - g;
+      }
+    }
+    for (size_t by = 1; by + B <= rows - 1; by += B)
+      for (size_t bx = M; bx + B + M <= w; bx += B) {
+        double mean_g = 0;
+        for (size_t y = by; y < by + B; ++y)
+          for (size_t x = bx; x < bx + B; ++x) mean_g += green[y * w + x];
+        mean_g /= B * B;
+        if (mean_g < kLeeDark || mean_g > kLeeBright) continue;
+        for (int pl = 0; pl < 2; ++pl) {
+          double s = 0;
+          for (size_t y = by; y < by + B; ++y)
+            for (size_t x = bx; x < bx + B; ++x) {
+              const float *a = &d[pl][(y - 1) * w + x], *c = a + w, *e = c + w;
+              float l = a[-1] - 2 * a[0] + a[1] - 2 * c[-1] + 4 * c[0] - 2 * c[1] + e[-1] - 2 * e[0] + e[1];
+              s += (double)l * l;
+            }
+          blocks[2 * b + pl].push_back((float)(s / (B * B) / 36.0));
+        }
+      }
+  });
+  for (int pl = 0; pl < 2; ++pl) {
+    std::vector<float> v;
+    for (size_t b = 0; b < nb; ++b) v.insert(v.end(), blocks[2 * b + pl].begin(), blocks[2 * b + pl].end());
+    nv[pl] = 0.f;
+    if (v.size() < kLeeBlocks) continue;
+    size_t k = (size_t)(kLeePercentile * (float)v.size());
+    std::nth_element(v.begin(), v.begin() + k, v.end());
+    nv[pl] = std::max(kLeeGain * v[k] - kLeeFloor, 0.f);
+  }
+}
+
+// RCD's R-G and B-G, replaced by their local linear MMSE (Lee / Wiener) estimate: the window mean plus the share of the
+// pixel's deviation from it that the signal explains, (variance - noise variance) / variance. Colour edges have the
+// variance and stay; flat chroma noise has none and goes. G is untouched, so the luma is RCD's.
+// ponytail: the results go to a full-frame float pair (8 B/px) so that bands never read each other's output; filter in
+// place with the band edges saved if 100 MP files run short of memory.
+void lee_chroma(float *rgb, size_t w, size_t h) {
+  float nv[2];
+  lee_noise(rgb, w, h, nv);
+  std::vector<float> res(w * h * 2);
+  parallel_rows(0, h, [&](size_t y0, size_t y1) {
+    lee_rows(rgb, w, h, y0, y1, [&](size_t y, const float *tg, const float *const *d, const float *const *mean, const float *const *var) {
+      float *o = &res[y * w * 2];
+      for (size_t x = 0; x < w; ++x)
+        for (int pl = 0; pl < 2; ++pl) {
+          float v = var[pl][x], k = v > nv[pl] ? 1.f - nv[pl] / v : 0.f;
+          float t = tg[x] + mean[pl][x] + k * (d[pl][x] - mean[pl][x]);
+          o[2 * x + pl] = std::max(t * t - kLeeOffset, 0.f);
+        }
+    });
+  });
+  parallel_rows(0, h, [&](size_t y0, size_t y1) {
+    for (size_t i = y0 * w; i < y1 * w; ++i) rgb[3 * i] = res[2 * i], rgb[3 * i + 2] = res[2 * i + 1];
+  });
+}
+
 } // namespace
 
 extern "C" {
@@ -254,8 +411,12 @@ void ol_demosaic_bayer_rcd(
 }
 
 // ============================================================================
-// 2. LMMSE (Zhang & Wu 2005, directional linear minimum mean square-error)
+// 2. LMMSE: RCD's green, with the colour differences filtered by a local linear MMSE estimator
 // ============================================================================
+// The directional estimate this replaces took green at an R/B site as that site's own value plus a smoothed colour
+// difference, so it carried the noise of the noisiest channel (R and B take the white-balance gain): the chroma got
+// cleaner but the luma lost ~2 dB to RCD at high ISO. Green is now RCD's, which averages real green samples, and only
+// the chroma is estimated (lee_chroma): a noise-free file comes back as RCD made it.
 void ol_demosaic_bayer_lmmse(
     const float *cfa,
     size_t w,
@@ -264,84 +425,8 @@ void ol_demosaic_bayer_lmmse(
     float *out_rgb
 ) {
   if (!cfa || !out_rgb || w < 9 || h < 9) return;
-  int pat[2][2];
-  decode_cfa_pat(cfa_pattern, pat);
-  fill_bayer_border(cfa, w, h, pat, 4, out_rgb);
-
-  // ponytail: four full-frame float buffers (16 B/px); tile it if 100 MP files run short of memory.
-  const size_t n = w * h;
-  std::vector<float> dH(n), dV(n), fH(n), fV(n);
-
-  // Step 1: Hamilton-Adams colour differences along each direction, as green minus the other colour at
-  // every site (mirrored at the edges, which keeps the Bayer phase): the noisy observations.
-  parallel_rows(0, h, [&](size_t r0, size_t r1) {
-    for (size_t r = r0; r < r1; ++r)
-      for (size_t c = 0; c < w; ++c) {
-        ptrdiff_t R = (ptrdiff_t)r, C = (ptrdiff_t)c;
-        size_t i = r * w + c;
-        float c0 = cfa[i];
-        float h1 = 0.5f * (cfa_at(cfa, w, h, R, C - 1) + cfa_at(cfa, w, h, R, C + 1)) +
-                   0.25f * (2.f * c0 - cfa_at(cfa, w, h, R, C - 2) - cfa_at(cfa, w, h, R, C + 2));
-        float v1 = 0.5f * (cfa_at(cfa, w, h, R - 1, C) + cfa_at(cfa, w, h, R + 1, C)) +
-                   0.25f * (2.f * c0 - cfa_at(cfa, w, h, R - 2, C) - cfa_at(cfa, w, h, R + 2, C));
-        bool g = pat[r & 1][c & 1] == 1;
-        dH[i] = g ? c0 - h1 : h1 - c0;
-        dV[i] = g ? c0 - v1 : v1 - c0;
-      }
-  });
-
-  // Step 2: each smoothed along its own direction (9-tap Gaussian, clamped at the edges): the signal.
-  static const float kGauss[9] = {0.023285f, 0.056662f, 0.121009f, 0.192065f, 0.213958f,
-                                  0.192065f, 0.121009f, 0.056662f, 0.023285f};
-  parallel_rows(0, h, [&](size_t r0, size_t r1) {
-    for (size_t r = r0; r < r1; ++r)
-      for (size_t c = 0; c < w; ++c) {
-        float sh = 0.f, sv = 0.f;
-        for (int k = -4; k <= 4; ++k) {
-          size_t cc = (size_t)std::clamp<ptrdiff_t>((ptrdiff_t)c + k, 0, (ptrdiff_t)w - 1);
-          size_t rr = (size_t)std::clamp<ptrdiff_t>((ptrdiff_t)r + k, 0, (ptrdiff_t)h - 1);
-          sh += kGauss[k + 4] * dH[r * w + cc];
-          sv += kGauss[k + 4] * dV[rr * w + c];
-        }
-        fH[r * w + c] = sh;
-        fV[r * w + c] = sv;
-      }
-  });
-
-  // Step 3: at R/B sites, per direction over a 9-pixel window: the signal's mean and variance, the noise
-  // variance as the mean squared residual (observation minus signal), the LMMSE estimate of the
-  // difference and its error variance. The two directions are fused by inverse error variance.
-  const float eps = 1e-10f;
-  parallel_rows(4, h - 4, [&](size_t r0, size_t r1) {
-    for (size_t r = r0; r < r1; ++r)
-      for (size_t c = 4; c + 4 < w; ++c) {
-        if (pat[r & 1][c & 1] == 1) {
-          out_rgb[(r * w + c) * 3 + 1] = cfa[r * w + c];
-          continue;
-        }
-        size_t i = r * w + c;
-        auto lmmse = [&](const std::vector<float> &y, const std::vector<float> &f, ptrdiff_t s, float *var_out) {
-          float mu = 0.f;
-          for (int k = -4; k <= 4; ++k) mu += f[(size_t)((ptrdiff_t)i + k * s)];
-          mu *= 1.f / 9.f;
-          float var_x = eps, var_v = eps;
-          for (int k = -4; k <= 4; ++k) {
-            size_t j = (size_t)((ptrdiff_t)i + k * s);
-            var_x += (f[j] - mu) * (f[j] - mu) * (1.f / 9.f);
-            var_v += (y[j] - f[j]) * (y[j] - f[j]) * (1.f / 9.f);
-          }
-          *var_out = var_x * var_v / (var_x + var_v);
-          return mu + var_x / (var_x + var_v) * (y[i] - mu);
-        };
-        float ph, pv;
-        float xh = lmmse(dH, fH, 1, &ph);
-        float xv = lmmse(dV, fV, (ptrdiff_t)w, &pv);
-        float d = (pv * xh + ph * xv) / (ph + pv);
-        out_rgb[i * 3 + 1] = std::max(0.f, cfa[i] + d);
-      }
-  });
-
-  complete_rb_from_green(cfa, w, h, pat, out_rgb);
+  ol_demosaic_bayer_rcd(cfa, w, h, cfa_pattern, out_rgb);
+  lee_chroma(out_rgb, w, h);
 }
 
 // ============================================================================
@@ -707,7 +792,16 @@ void OlRaw::interpolate(void *self) {
   if (raw->ol_demosaic == OL_DEMOSAIC_RCD) {
     ol_demosaic_bayer_rcd(cfa.data(), w, h, cfa_code, rgb.data());
   } else if (raw->ol_demosaic == OL_DEMOSAIC_LMMSE) {
+    // Highlight recovery scales the frame by the largest white-balance multiplier instead of the smallest, so white
+    // balanced green clips at lo < 1: put white back at 1.0, where the filter's constants and clipping gate expect it.
+    const float *m = raw->imgdata.color.pre_mul;
+    float lo = std::min({m[0], m[1], m[2]}), s = lo > 0.01f && lo < 1.f ? 1.f / lo : 1.f;
+    auto scale = [](std::vector<float> &v, float k) {
+      if (k != 1.f) parallel_rows(0, v.size(), [&](size_t a, size_t b) { for (size_t i = a; i < b; ++i) v[i] *= k; });
+    };
+    scale(cfa, s);
     ol_demosaic_bayer_lmmse(cfa.data(), w, h, cfa_code, rgb.data());
+    scale(rgb, 1.f / s);
   } else {
     ol_demosaic_bayer_amaze(cfa.data(), w, h, cfa_code, rgb.data());
   }
