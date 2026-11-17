@@ -1837,12 +1837,40 @@ fn duplicate(core: St, from: storage::Place, to: storage::Place, options: storag
 }
 
 pub fn run() {
-    let core = Arc::new(Core::open(data_dir()).expect("could not open the Optixel catalog"));
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .menu(app_menu)
         .setup(move |app| {
+            use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+            let dir = data_dir();
+            let def = default_data_dir();
+            let core = match Core::open(dir.clone()) {
+                Ok(c) => Arc::new(c),
+                Err(err) if dir != def => {
+                    app.dialog()
+                        .message(format!(
+                            "Could not open catalog at {}:\n{err}\n\n\
+                             If this folder is on an external drive, grant Removable Volumes access \
+                             to Optixel Studio in System Settings → Privacy & Security → Files and Folders, \
+                             or ensure the drive is connected.\n\n\
+                             Opening the default local catalog for now (your storage setting is preserved).",
+                            dir.display()
+                        ))
+                        .title("Optixel Studio — Storage Access")
+                        .kind(MessageDialogKind::Warning)
+                        .blocking_show();
+                    Arc::new(Core::open(def).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?)
+                }
+                Err(err) => {
+                    app.dialog()
+                        .message(format!("Could not open the Optixel catalog at {}:\n{err}", dir.display()))
+                        .title("Optixel Studio — Startup Error")
+                        .kind(MessageDialogKind::Error)
+                        .blocking_show();
+                    return Err(err.into());
+                }
+            };
             let _ = core.app.set(app.handle().clone());
             app.asset_protocol_scope().allow_directory(core.dir().join("thumbs"), true)?;
             app.manage(core.clone());

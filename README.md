@@ -5,7 +5,7 @@
 **A free, open-source RAW photo editor and photo library that keeps your files and edits on your own computer, with on-device AI and your choice of AI assistant.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/Release-v0.3.2-success.svg)](https://github.com/rcwkan/optixel-studio/releases)
+[![Release](https://img.shields.io/badge/Release-v0.3.3-success.svg)](https://github.com/rcwkan/optixel-studio/releases)
 [![Website](https://img.shields.io/badge/Website-optixel.makecade.com-25c6d8.svg)](https://optixel.makecade.com/)
 [![Platforms](https://img.shields.io/badge/Platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](https://github.com/rcwkan/optixel-studio/releases)
 
@@ -62,13 +62,13 @@ Each release includes a `SHA256SUMS.txt` file. Compare it with the checksum of y
 
 ```bash
 # macOS
-shasum -a 256 Optixel.Studio_0.3.2_aarch64.dmg
+shasum -a 256 Optixel.Studio_0.3.3_aarch64.dmg
 
 # Linux
 sha256sum -c SHA256SUMS.txt
 
 # Windows (PowerShell)
-Get-FileHash .\Optixel.Studio_0.3.2_x64-setup.exe -Algorithm SHA256
+Get-FileHash .\Optixel.Studio_0.3.3_x64-setup.exe -Algorithm SHA256
 ```
 
 ---
