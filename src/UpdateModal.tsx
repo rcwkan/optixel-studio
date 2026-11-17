@@ -115,7 +115,7 @@ export function UpdateModal({
               🚀
             </span>
             <div>
-              <h2 className="text-sm font-semibold text-white">Software Update</h2>
+              <h2 className="text-sm font-semibold text-neutral-100">Software Update</h2>
               <p className="text-[11px] text-neutral-400">Optixel Studio Release Channel</p>
             </div>
           </div>
@@ -139,11 +139,11 @@ export function UpdateModal({
           )}
 
           {!loading && error && (
-            <div className="rounded-lg border border-red-500/30 bg-red-950/20 p-4 space-y-3">
+            <div className="rounded-lg border border-[var(--tint-red-border)] bg-[var(--tint-red-bg)] p-4 space-y-3">
               <div className="flex items-start gap-2.5">
-                <span className="text-base text-red-400">⚠️</span>
+                <span className="text-base text-[var(--tint-red-text)]">⚠️</span>
                 <div className="space-y-1 flex-1">
-                  <h3 className="font-semibold text-red-300">Unable to Check for Updates</h3>
+                  <h3 className="font-semibold text-[var(--tint-red-text)]">Unable to Check for Updates</h3>
                   <p className="text-neutral-300 text-[11px] leading-relaxed">{error}</p>
                 </div>
               </div>
@@ -171,16 +171,16 @@ export function UpdateModal({
                 <div className="rounded-lg border border-[var(--theme-accent,#0ea5e9)]/40 bg-[var(--theme-accent,#0ea5e9)]/10 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <span className="inline-block rounded-full bg-[var(--theme-accent,#0ea5e9)]/30 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--theme-accent,#0ea5e9)]">
+                      <span className="inline-block rounded-full bg-[var(--theme-accent,#0ea5e9)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--theme-accent-contrast,#ffffff)]">
                         New Update Available
                       </span>
-                      <h3 className="mt-1.5 text-base font-semibold text-white">
+                      <h3 className="mt-1.5 text-base font-semibold text-neutral-100">
                         {info.release_name || `Version ${info.latest_version}`}
                       </h3>
                       <div className="mt-1 flex items-center gap-3 text-neutral-400 text-[11px]">
                         <span>Installed: v{info.current_version}</span>
                         <span>•</span>
-                        <span className="font-medium text-white">Latest: {info.release_tag}</span>
+                        <span className="font-medium text-neutral-100">Latest: {info.release_tag}</span>
                         {info.published_at && (
                           <>
                             <span>•</span>
@@ -192,13 +192,13 @@ export function UpdateModal({
                   </div>
                 </div>
               ) : (
-                <div className="rounded-lg border border-emerald-500/30 bg-emerald-950/20 p-4">
+                <div className="rounded-lg border border-[var(--tint-emerald-border)] bg-[var(--tint-emerald-bg)] p-4">
                   <div className="flex items-center gap-3">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-400 text-lg">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--tint-emerald-border)] bg-[var(--tint-emerald-bg)] text-[var(--tint-emerald-text)] text-lg">
                       ✓
                     </div>
                     <div>
-                      <h3 className="font-semibold text-emerald-300">Optixel Studio is up to date</h3>
+                      <h3 className="font-semibold text-[var(--tint-emerald-text)]">Optixel Studio is up to date</h3>
                       <p className="text-neutral-400 text-[11px] mt-0.5">
                         You are running version <span className="text-neutral-200 font-medium">{info.current_version}</span>, which is the latest available release.
                       </p>
@@ -236,7 +236,7 @@ export function UpdateModal({
                     {!downloading && !downloadedPath && (
                       <button
                         onClick={() => handleDownload(info.recommended_asset!)}
-                        className="rounded-lg bg-[var(--theme-accent,#0ea5e9)] hover:brightness-110 px-4 py-2 text-xs font-semibold text-white shadow-md transition-all cursor-pointer flex items-center gap-1.5"
+                        className="rounded-lg bg-[var(--theme-accent,#0ea5e9)] hover:brightness-110 px-4 py-2 text-xs font-semibold text-[var(--theme-accent-contrast,#ffffff)] shadow-md transition-all cursor-pointer flex items-center gap-1.5"
                       >
                         <span>⬇ Download {info.has_update ? "Update" : "Package"}</span>
                       </button>
@@ -266,7 +266,7 @@ export function UpdateModal({
                   {/* Download Completed Actions */}
                   {downloadedPath && (
                     <div className="flex flex-col gap-2 pt-2 border-t border-neutral-800">
-                      <div className="flex items-center gap-2 text-emerald-400 text-xs font-medium">
+                      <div className="flex items-center gap-2 text-[var(--tint-emerald-text)] text-xs font-medium">
                         <span>✓ Downloaded & SHA-256 verified</span>
                         <span className="text-[11px] text-neutral-400 truncate">({downloadedPath})</span>
                       </div>
@@ -288,7 +288,7 @@ export function UpdateModal({
                   )}
 
                   {installError && (
-                    <p className="text-xs text-red-400 pt-1">
+                    <p className="text-xs text-[var(--tint-red-text)] pt-1">
                       ⚠️ {installError}
                     </p>
                   )}
