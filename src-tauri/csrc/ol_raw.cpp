@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -271,8 +272,8 @@ extern "C" {
 typedef struct {
   int demosaic;     // LibRaw user_qual (0..12, -1 default) or OL_DEMOSAIC_RCD(101)/LMMSE(102)/AMAZE(103)
   int highlight;    // 0 clip, 1 unclip, 2 blend, 3-9 rebuild
-  int proxy_edge;   // > 0: half-size fast binning when edge >= 2 * proxy_edge and demosaic < 0
-  int black_offset; // ADU offset added to per-channel optical black level
+  int proxy_edge;   // > 0: half-size fast binning (no demosaic at all) when edge >= 2 * proxy_edge
+  int black_offset; // ADU shifted off the camera's black level: > 0 deepens the shadows
   float raw_denoise; // 0..1 sensor denoise on camera RGB, before the colour matrix (OlRaw::denoise)
 } OlRawOpts;
 
@@ -316,14 +317,17 @@ int ol_raw_develop(const unsigned char *data, size_t len, const OlRawOpts *o, Ol
     raw->adjust_to_raw_inset_crop(1); // the camera's own frame (the size its JPEGs have), when the file names one
     const libraw_image_sizes_t &s = raw->imgdata.sizes;
     int edge = s.width > s.height ? s.width : s.height;
-    // Bin to half-size for fast proxy decodes unless a custom demosaic is being evaluated at full res
+    // Bin to half-size for fast proxy decodes: LibRaw then skips demosaicing, so the demosaic only shows in
+    // full-size decodes (100 % zoom, exports); the sensor denoise still runs, on the binned data. The proxy is
+    // resized to proxy_edge anyway
     p.half_size = o->proxy_edge > 0 && edge >= 2 * o->proxy_edge;
     if ((rc = raw->unpack()) != LIBRAW_SUCCESS) return fail(out, "unpack", LibRaw::strerror(rc));
 
-    // Apply optional optical black-level offset in sensor ADU
+    // The black offset goes into rawdata.color (raw2image_start() restores imgdata.color from it), not into
+    // `user_black`: that replaces the whole black level and drops a DNG's repeating black pattern.
     if (o->black_offset != 0) {
-      int base = (int)raw->imgdata.color.black + o->black_offset;
-      p.user_black = std::max(0, base);
+      libraw_colordata_t &c = raw->imgdata.rawdata.color;
+      ol_shift_black(&c.black, c.cblack, o->black_offset);
     }
 
     if ((rc = raw->dcraw_process()) != LIBRAW_SUCCESS) return fail(out, "develop", LibRaw::strerror(rc));
@@ -367,6 +371,28 @@ int ol_raw_camera_matrix(const unsigned char *data, size_t len, float out[9]) {
   } catch (...) {
     return 1;
   }
+}
+
+int ol_shift_black(unsigned *black, unsigned *cblack, int off) {
+  if (!black || !cblack) return 0;
+  uint64_t lowest64 = (uint64_t)*black + (uint64_t)cblack[0];
+  for (int c = 1; c < 4; ++c) {
+    lowest64 = std::min(lowest64, (uint64_t)*black + (uint64_t)cblack[c]);
+  }
+  int64_t lowest = (int64_t)std::min<uint64_t>(lowest64, (uint64_t)INT32_MAX);
+  int64_t applied = std::max<int64_t>((int64_t)off, -lowest);
+  int64_t common = (int64_t)*black + applied;
+  if (common >= 0) {
+    *black = (unsigned)std::min<int64_t>(common, (int64_t)UINT32_MAX);
+  } else {
+    // the common part can't take it all: the rest comes off the channels
+    *black = 0;
+    for (int c = 0; c < 4; ++c) {
+      int64_t ch = (int64_t)cblack[c] + common;
+      cblack[c] = (unsigned)std::max<int64_t>(0, ch);
+    }
+  }
+  return (int)applied;
 }
 
 void ol_raw_free(void *handle) {

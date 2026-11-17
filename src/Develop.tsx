@@ -250,6 +250,9 @@ export function Develop(p: Props) {
   const beforeRenderRef = useRef<Rendered | null>(null);
   const beforeJobIdRef = useRef<number | null>(null);
   const [beforeLoading, setBeforeLoading] = useState(false);
+  // full-size render of the After / Before in flight (zoomed past the proxy): the picture is blurry until it lands
+  const [sharpAfter, setSharpAfter] = useState(false);
+  const [sharpBefore, setSharpBefore] = useState(false);
   const isDraggingSplit = useRef(false);
   const wrap = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -664,18 +667,22 @@ export function Develop(p: Props) {
     }
   }, [id]);
 
-  useEffect(() => {
-    if (compareMode === "off" || id == null) return;
-    let cancelled = false;
-
-    // Keep geometric framing (crop, rotation, transform, lens) aligned with current dev state
-    const geomDefaults: Dev = {
+  // Keep geometric framing (crop, rotation, transform, lens) aligned with current dev state
+  const geomDefaults = useMemo<Dev>(
+    () => ({
       ...structuredClone(p.defaults),
       crop: dev ? dev.crop : p.defaults.crop,
       image_rotation: dev ? dev.image_rotation : p.defaults.image_rotation,
       transform: dev ? dev.transform : p.defaults.transform,
       lens: dev ? dev.lens : p.defaults.lens,
-    };
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [p.defaults, dev?.crop, dev?.image_rotation, dev?.transform, dev?.lens],
+  );
+
+  useEffect(() => {
+    if (compareMode === "off" || id == null) return;
+    let cancelled = false;
 
     if (beforeJobIdRef.current === id && beforeRenderRef.current) {
       drawBefore(beforeRenderRef.current);
@@ -699,7 +706,7 @@ export function Develop(p: Props) {
     return () => {
       cancelled = true;
     };
-  }, [compareMode, id, p.defaults, skipCrop, fullFrame, drawBefore, dev?.crop, dev?.image_rotation, dev?.transform, dev?.lens]);
+  }, [compareMode, id, geomDefaults, skipCrop, fullFrame, drawBefore]);
 
   useEffect(() => {
     if (lastRenderRef.current && canvas.current) {
@@ -718,7 +725,8 @@ export function Develop(p: Props) {
 
   const isRaw = useMemo(() => {
     if (!p.active?.filename) return false;
-    return /\.(nef|cr2|cr3|arw|dng|orf|rw2|raw|pef|raf|3fr|mef|nrw|ptx|srw|x3f)$/i.test(p.active.filename);
+    // develop::RAW_EXTS: what the backend decodes as a RAW (the RAW panel's decode controls hang on this)
+    return /\.(dng|cr[23w]|nef|nrw|arw|sr[f2]|raf|orf|rw[2l]|pef|srw|3fr|iiq|erf|mef|mos|kdc|dcr)$/i.test(p.active.filename);
   }, [p.active?.filename]);
   const beforeBadgeText = isRaw ? "Before (RAW)" : "Before (Original)";
   const afterBadgeText = "After (Graded)";
@@ -778,17 +786,45 @@ export function Develop(p: Props) {
           gamut_warn: proof.gamut_warn ?? true,
         };
     let cancelled = false;
+    setSharpAfter(true);
     const t = setTimeout(() => {
       api
         .render(id, showBefore ? p.defaults : dev, skipCrop && !showBefore, overlay && !showBefore ? maskSel : null, fullFrame, view, true)
         .then((r) => !cancelled && !job.current && draw(r, true))
-        .catch((e) => console.warn("Full-size render:", e));
+        .catch((e) => console.warn("Full-size render:", e))
+        .finally(() => !cancelled && setSharpAfter(false));
     }, 400);
     return () => {
       cancelled = true;
       clearTimeout(t);
+      setSharpAfter(false);
     };
-  }, [id, dev, showBefore, skipCrop, fullFrame, overlay, maskSel, proof.gamut, proof.clipping, proof.intent, proof.bpc, proof.simulate_paper, proof.gamut_warn, spots, p.defaults, zoomedPastProxy]);
+    // compareMode: toggling it re-renders the proxy over the sharp canvas, so the full-size render must follow
+  }, [id, dev, showBefore, skipCrop, fullFrame, overlay, maskSel, proof.gamut, proof.clipping, proof.intent, proof.bpc, proof.simulate_paper, proof.gamut_warn, spots, p.defaults, zoomedPastProxy, compareMode]);
+
+  // Split / side-by-side: the Before canvas needs the same full-size render, or it stays blurry next to the sharp After
+  useEffect(() => {
+    // wait for the proxy Before (beforeLoading), or it would land over this render
+    if (compareMode === "off" || id == null || !zoomedPastProxy || beforeLoading || beforeJobIdRef.current !== id) return;
+    let cancelled = false;
+    setSharpBefore(true);
+    const t = setTimeout(() => {
+      api
+        .render(id, geomDefaults, skipCrop, null, fullFrame, null, true)
+        .then((r) => {
+          if (cancelled) return;
+          beforeRenderRef.current = r; // the redraws on mode / orientation change use this one too
+          drawBefore(r);
+        })
+        .catch((e) => console.warn("Full-size Before render:", e))
+        .finally(() => !cancelled && setSharpBefore(false));
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+      setSharpBefore(false);
+    };
+  }, [compareMode, id, zoomedPastProxy, beforeLoading, geomDefaults, skipCrop, fullFrame, drawBefore]);
 
   useEffect(() => {
     const el = boxRef.current;
@@ -2226,13 +2262,13 @@ export function Develop(p: Props) {
               </div>
             </div>
           )}
-          {slow && !working && !loading && (
+          {(slow || sharpAfter || sharpBefore) && !working && !loading && (
             <div className="pointer-events-none absolute right-3 top-3 z-30 flex items-center gap-1.5 rounded-full border border-white/10 bg-neutral-900/85 px-2.5 py-1 text-[10px] text-neutral-200 shadow-md backdrop-blur-md" aria-live="polite">
               <svg className="h-3 w-3 animate-spin text-sky-400" viewBox="0 0 24 24" fill="none">
                 <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
                 <path className="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
               </svg>
-              Rendering…
+              {slow ? "Rendering…" : "Loading full resolution…"}
             </div>
           )}
           {error && (
@@ -2629,6 +2665,7 @@ export function Develop(p: Props) {
                 rawInfo={rawInfo}
                 showAfOverlay={showAfOverlay}
                 setShowAfOverlay={setShowAfOverlay}
+                isRaw={isRaw}
               />
             )}
           </>
@@ -2773,6 +2810,7 @@ export function Develop(p: Props) {
                 rawInfo={rawInfo}
                 showAfOverlay={showAfOverlay}
                 setShowAfOverlay={setShowAfOverlay}
+                isRaw={isRaw}
               />
             )}
             {mask && <p className="px-3 py-2 text-[10px] text-neutral-500">Vignette, grain and spot removal are for the whole photo: press Done to see them.</p>}

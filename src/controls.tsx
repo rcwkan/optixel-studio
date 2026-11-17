@@ -43,14 +43,18 @@ export function Panel({ title, children, open: initial = true, right }: { title:
   return (
     <section className="border-b border-neutral-800">
       <header
-        className="flex cursor-pointer items-center justify-between px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-neutral-300 hover:bg-neutral-800/60 transition-colors"
+        className="flex cursor-pointer items-center justify-between gap-2 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-neutral-300 hover:bg-neutral-800/60 transition-colors"
         onClick={() => setOpen(!open)}
       >
-        <span className="flex items-center gap-1.5 truncate">
-          <span className="inline-block w-3 text-neutral-500">{open ? "▾" : "▸"}</span>
+        <span className="flex min-w-0 items-center gap-1.5 truncate">
+          <span className="inline-block w-3 shrink-0 text-neutral-500">{open ? "▾" : "▸"}</span>
           {title}
         </span>
-        <span onClick={(e) => e.stopPropagation()}>{right}</span>
+        {right != null && (
+          <span className="shrink-0 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+            {right}
+          </span>
+        )}
       </header>
       {open && <div className="px-3 pb-3">{children}</div>}
     </section>
