@@ -104,7 +104,7 @@ unsafe extern "C" {
 /// Demosaic names (as `develop::Raw` stores them) and their engine codes.
 /// - `rcd`: Ratio Corrected Demosaicing (general sharpness)
 /// - `amaze`: Aliasing Minimization and Zipper Elimination (low-ISO maze suppression)
-/// - `lmmse`: Linear Minimum Mean Square Error (high-ISO astro / night photography)
+/// - `lmmse`: RCD's green with LMMSE-filtered colour differences (cleaner colour at high ISO; RCD when noise-free)
 /// - `linear`..`aahd`: LibRaw's built-in Bayer & X-Trans Markesteijn demosaics.
 pub const DEMOSAIC: &[(&str, i32)] = &[
     ("rcd", 101),
@@ -510,7 +510,8 @@ mod tests {
 
     /// Our Bayer demosaics on synthetic scenes, for each of the four 2x2 layouts: a flat grey comes back
     /// flat (no maze, no colour cast), a scene of colour ramps and a soft-edged disc comes back close to the
-    /// truth, and on a noisy mosaic LMMSE (the high-ISO choice) is at least as clean as RCD.
+    /// truth, a clean mosaic comes back from LMMSE as RCD made it (there is no noise to filter), and on a noisy
+    /// one LMMSE (the high-ISO choice) is cleaner than RCD: its chroma is filtered, its luma is RCD's.
     #[test]
     fn demosaics_reconstruct_synthetic_scenes() {
         use std::ffi::c_int;
@@ -557,7 +558,8 @@ mod tests {
         };
         let mut out = vec![0.0f32; w * h * 3];
         for p in 0..4 {
-            for (name, f) in algos {
+            let mut clean_db = [0.0f64; 3];
+            for (i, (name, f)) in algos.into_iter().enumerate() {
                 let flat = vec![0.4f32; w * h];
                 unsafe { f(flat.as_ptr(), w, h, p as c_int, out.as_mut_ptr()) };
                 let worst = out.iter().map(|v| (v - 0.4).abs()).fold(0.0f32, f32::max);
@@ -568,7 +570,9 @@ mod tests {
                 let clean = psnr(&out, &scene);
                 eprintln!("{name} layout {p}: {clean:.1} dB");
                 assert!(clean > 30.0, "{name} layout {p}: {clean:.1} dB");
+                clean_db[i] = clean;
             }
+            assert!((clean_db[2] - clean_db[0]).abs() < 0.5, "layout {p}: LMMSE {:.1} dB vs RCD {:.1} dB on a clean mosaic", clean_db[2], clean_db[0]);
         }
         // high ISO: the same scene with sensor noise
         let noisy: Vec<f32> = (0..w * h).map(|i| scene(i / w, i % w)[layout(0, i / w, i % w)] + 0.03 * gauss()).collect();
@@ -580,7 +584,20 @@ mod tests {
             })
             .collect();
         eprintln!("noisy: rcd {:.1} dB, amaze {:.1} dB, lmmse {:.1} dB", db[0], db[1], db[2]);
-        assert!(db[2] >= db[0] - 0.1, "LMMSE {:.1} dB vs RCD {:.1} dB on a noisy mosaic", db[2], db[0]);
+        assert!(db[2] >= db[0] + 0.3, "LMMSE {:.1} dB vs RCD {:.1} dB on a noisy mosaic", db[2], db[0]);
+
+        // a third of the frame clipped to black: flat, but not clean, so it must not pass for the noise level
+        let clipped: Vec<f32> = (0..w * h).map(|i| if i % w < 56 { 0.0 } else { (scene(i / w, i % w)[layout(0, i / w, i % w)] + 0.03 * gauss()).max(0.0) }).collect();
+        let truth = |r: usize, c: usize| if c < 56 { [0.0; 3] } else { scene(r, c) };
+        let db: Vec<f64> = [0, 2]
+            .iter()
+            .map(|&k| {
+                unsafe { algos[k].1(clipped.as_ptr(), w, h, 0, out.as_mut_ptr()) };
+                psnr(&out, &truth)
+            })
+            .collect();
+        eprintln!("noisy, a third clipped to black: rcd {:.1} dB, lmmse {:.1} dB", db[0], db[1]);
+        assert!(db[1] >= db[0] + 0.3, "LMMSE {:.1} dB vs RCD {:.1} dB with black-clipped areas", db[1], db[0]);
     }
 
     /// The black-level shift works on both of LibRaw's black levels (common and per-channel), either way, and
@@ -658,6 +675,13 @@ mod tests {
             assert!(max > 1.0 || name != &"unclip", "{name} kept nothing above white");
             assert!((b / a - 1.0).abs() < 0.05, "{name} changed the exposure of what is not blown: {:.4}", b / a);
         }
+        // LMMSE with highlight recovery: that scales the frame by another white-balance multiplier, which the filter
+        // must undo (it expects white at 1.0), so the exposure and the frame are RCD's with the same recovery
+        let rcd = super::develop(&file, "rcd", "rebuild", None).unwrap();
+        let lmmse = super::develop(&file, "lmmse", "rebuild", None).unwrap();
+        assert_eq!((lmmse.0, lmmse.1), (w, h));
+        assert!((mean(&lmmse.2) / mean(&rcd.2) - 1.0).abs() < 0.01, "LMMSE with rebuilt highlights: mean {:.4} vs RCD {:.4}", mean(&lmmse.2), mean(&rcd.2));
+
         // the black point: raising it deepens the shadows, and lowering it never darkens (a camera whose black
         // is 0, like a black-subtracted NEF, has nothing to lower)
         let (up, down) = (super::develop_ex(&file, "", "", 64, 0.0, Some(1600)).unwrap().2, super::develop_ex(&file, "", "", -64, 0.0, Some(1600)).unwrap().2);

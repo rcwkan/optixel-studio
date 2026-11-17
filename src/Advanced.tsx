@@ -350,7 +350,7 @@ const RAW_DEFAULT = { engine: "", demosaic: "", highlights: "", black_offset: 0,
 const DEMOSAICS: [string, string][] = [
   ["rcd", "RCD — crisp, fast all-rounder"],
   ["amaze", "AMaZE — fine detail"],
-  ["lmmse", "LMMSE — noise-adaptive"],
+  ["lmmse", "LMMSE — cleaner colour, high ISO"],
   ["ahd", "AHD — classic, balanced"],
   ["dcb", "DCB — detail-preserving, slower"],
   ["dht", "DHT — fine lines, slow"],

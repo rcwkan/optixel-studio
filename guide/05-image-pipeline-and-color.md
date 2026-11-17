@@ -158,7 +158,7 @@ To achieve studio-grade parity with professional RAW developers, Optixel Studio 
 * **Multi-Algorithm Demosaic Selector**:
   * **RCD**: Ratio Corrected Demosaicing for maximum structural edge acuity.
   * **AMaZE**: Directional interpolation suppressing zipper and maze artifacts in low-ISO landscapes.
-  * **LMMSE**: High-ISO noise-adaptive interpolation preserving micro-textures in astrophotography and low-light portraits.
+  * **LMMSE**: RCD's green with the colour differences (R−G, B−G) filtered by a local linear minimum-mean-square-error (Lee / Wiener) estimator: colour noise at high ISO drops by about half (measured at ISO 1600), luma and detail are RCD's, and at base ISO it is practically RCD. The noise level is estimated from the image itself (clipped black and white areas and smooth gradients are not mistaken for it).
 * **Optical Black-Level & Multi-Channel Highlight Recovery**: Directly reads optical calibration black points from masked sensor margins and executes highlight reconstruction across saturated channels prior to tonemapping.
 
 ### B. LittleCMS 2 Studio Color Management & Soft-Proofing
