@@ -5,7 +5,7 @@
 **A free, open-source RAW photo editor and photo library that keeps your files and edits on your own computer, with on-device AI and your choice of AI assistant.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/Release-v0.3.1-success.svg)](https://github.com/rcwkan/optixel-studio/releases)
+[![Release](https://img.shields.io/badge/Release-v0.3.2-success.svg)](https://github.com/rcwkan/optixel-studio/releases)
 [![Website](https://img.shields.io/badge/Website-optixel.makecade.com-25c6d8.svg)](https://optixel.makecade.com/)
 [![Platforms](https://img.shields.io/badge/Platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](https://github.com/rcwkan/optixel-studio/releases)
 
@@ -62,13 +62,13 @@ Each release includes a `SHA256SUMS.txt` file. Compare it with the checksum of y
 
 ```bash
 # macOS
-shasum -a 256 Optixel.Studio_0.3.1_aarch64.dmg
+shasum -a 256 Optixel.Studio_0.3.2_aarch64.dmg
 
 # Linux
 sha256sum -c SHA256SUMS.txt
 
 # Windows (PowerShell)
-Get-FileHash .\Optixel.Studio_0.3.1_x64-setup.exe -Algorithm SHA256
+Get-FileHash .\Optixel.Studio_0.3.2_x64-setup.exe -Algorithm SHA256
 ```
 
 ---
@@ -266,6 +266,7 @@ All models are optional and downloaded only when you choose them in **Settings â
 | Stable Diffusion 1.5 Inpainting (RunwayML / Stability AI) | Generative fill, with optional text prompt | ~4 GB | CreativeML OpenRAIL-M |
 | SCUNet Clean / Sharp | AI denoise | ~3 GB | Apache-2.0 |
 | NAFNet (Megvii) | AI denoise, fast | ~1.5 GB | MIT |
+| Real-ESRGAN x4plus / anime 6B (Xintao Wang) | AI upscale in Auto â†’ Enhance (photos / drawings) | ~1 GB | BSD-3-Clause |
 | YOLOFace + ArcFace (InsightFace / FaceFusion) | Find and recognize people | ~500 MB | Non-commercial research |
 | 2DFAN4 | Blink detection | ~300 MB | Non-commercial research |
 | HyperSwap 1A (FaceFusion) | Face swap | ~1 GB | Research; check FaceFusion's terms |

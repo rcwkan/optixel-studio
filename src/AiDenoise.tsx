@@ -57,6 +57,9 @@ export type AiJobProgress = {
   elapsedSec: number;
 };
 
+/** The biggest result AI Upscale makes: a bigger photo is enlarged less (the file is a 32-bit TIFF, hundreds of MB) */
+const UPSCALE_MAX_MP = 200;
+
 /** Progress bar with percentage, phase details, elapsed timer, ETA, and cancellation. */
 function AiProgressBar({
   title,
@@ -157,7 +160,7 @@ function AiProgressBar({
 /** Photo AI tools organized into workflow groups:
  *  1. Tone & Color (Auto Adjust)
  *  2. Geometry & Perspective (PerspectiveFields Auto Align)
- *  3. Detail & Restoration (Neural Denoise)
+ *  3. Detail & Restoration (Neural Denoise, AI Upscale into a new photo)
  *  4. Retouch & Faces (Object Removal, Generative Fill, Face Swap & AI Layers)
  *  Adjustments are stored non-destructively inside Develop with pixel patches cached on disk. */
 export function AiTab(p: {
@@ -196,17 +199,23 @@ export function AiTab(p: {
   const [amount, setAmount] = useState(100);
   const [adjusting, setAdjusting] = useState(false);
   const [swapJob, setSwapJob] = useState<AiJobProgress | null>(null);
+  const [upJob, setUpJob] = useState<AiJobProgress | null>(null);
+  const [upModelId, setUpModelId] = useState("");
+  const [upScale, setUpScale] = useState(2);
+  /** the photo AI Upscale just made */
+  const [made, setMade] = useState<{ id: number; size: string } | null>(null);
   /** the library face picker: open while not null, holding the search text */
   const [faceQuery, setFaceQuery] = useState<string | null>(null);
   const [faces, setFaces] = useState<Photo[]>([]);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   /** which tool is showing: one at a time, so nothing needs scrolling to reach */
-  const [sub, setSub] = useState<"tone" | "align" | "denoise" | "retouch">("tone");
+  const [sub, setSub] = useState<"tone" | "align" | "denoise" | "upscale" | "retouch">("tone");
   const [rsub, setRsub] = useState<"remove" | "face">("remove");
 
   useEffect(() => void api.aiModels().then((r) => setModels(r.models), () => setModels([])), []);
   useEffect(() => {
     setAlignInfo(null);
+    setMade(null);
   }, [photoId]);
 
   useEffect(() => {
@@ -216,6 +225,7 @@ export function AiTab(p: {
         if (ev.job === "ai-denoise") setJob(null);
         if (ev.job === "ai-align") setAlignJob(null);
         if (ev.job === "ai-faceswap") setSwapJob(null);
+        if (ev.job === "ai-upscale") setUpJob(null);
         if (ev.job === "ai-remove") {
           setFillJob(null);
           setRemoving(false);
@@ -253,6 +263,16 @@ export function AiTab(p: {
           elapsedSec: Math.floor((Date.now() - (prev?.startTime ?? Date.now())) / 1000),
         }));
       }
+      if (ev.job === "ai-upscale") {
+        setUpJob((prev) => ({
+          label: ev.label || "Enlarging…",
+          done: ev.done,
+          total: ev.total,
+          percent: pct,
+          startTime: prev?.startTime ?? Date.now(),
+          elapsedSec: Math.floor((Date.now() - (prev?.startTime ?? Date.now())) / 1000),
+        }));
+      }
       if (ev.job === "ai-remove") {
         setFillJob((prev) => ({
           label: ev.label || "Removing object…",
@@ -268,7 +288,7 @@ export function AiTab(p: {
   }, []);
 
   useEffect(() => {
-    if (!job && !alignJob && !fillJob && !swapJob && !removing) return;
+    if (!job && !alignJob && !fillJob && !swapJob && !upJob && !removing) return;
     const interval = setInterval(() => {
       if (job) {
         setJob((prev) => (prev ? { ...prev, elapsedSec: Math.floor((Date.now() - prev.startTime) / 1000) } : null));
@@ -282,9 +302,12 @@ export function AiTab(p: {
       if (swapJob) {
         setSwapJob((prev) => (prev ? { ...prev, elapsedSec: Math.floor((Date.now() - prev.startTime) / 1000) } : null));
       }
+      if (upJob) {
+        setUpJob((prev) => (prev ? { ...prev, elapsedSec: Math.floor((Date.now() - prev.startTime) / 1000) } : null));
+      }
     }, 1000);
     return () => clearInterval(interval);
-  }, [job != null, alignJob != null, fillJob != null, swapJob != null, removing]);
+  }, [job != null, alignJob != null, fillJob != null, swapJob != null, upJob != null, removing]);
 
   useEffect(() => {
     if (faceQuery == null) return;
@@ -304,6 +327,9 @@ export function AiTab(p: {
   const denoiseModel = use(models.filter((m) => m.kind === "denoise"), p.settings?.ai_denoise_model);
   const removalModel = use(models.filter((m) => m.kind === "inpaint" || m.kind === "generate"), p.settings?.ai_removal_model);
   const faceModel = use(models.filter((m) => m.kind === "faceswap"));
+  // the upscalers are not alike (photos / drawings), so the choice is made here, not in Settings
+  const upscaleModels = models.filter((m) => m.kind === "upscale" && m.installed);
+  const upModel = upscaleModels.find((m) => m.id === upModelId) ?? upscaleModels[0];
   const generative = removalModel?.kind === "generate";
 
   const autoAdjust = async () => {
@@ -384,6 +410,26 @@ export function AiTab(p: {
       }
     } finally {
       setJob(null);
+    }
+  };
+
+  /** Enhance (the Auto function) on this photo alone: a new, larger master next to the original */
+  const upscale = async () => {
+    if (photoId == null || !upModel) return;
+    setMsg(null);
+    setMade(null);
+    setUpJob({ label: "Loading the upscale model…", done: 0, total: 1, percent: 0, startTime: Date.now(), elapsedSec: 0 });
+    try {
+      // everything this button depends on is set here: the saved Enhance settings (denoise, engine, 48 MP cap) must not change it
+      const r = await api.autoRun("enhance", [photoId], { denoise: false, super_resolution: true, scale: upScale, upscale_model: upModel.id, engine: "builtin", max_megapixels: UPSCALE_MAX_MP }, "ai-upscale");
+      const row = r.rows[0] as { new_id?: number; size?: string; error?: string } | undefined;
+      if (r.cancelled) setMsg({ ok: false, text: "AI Upscale cancelled." });
+      else if (row?.new_id != null) setMade({ id: row.new_id, size: row.size ?? "" });
+      else setMsg({ ok: false, text: row?.error ?? "AI Upscale made no photo." });
+    } catch (e) {
+      setMsg({ ok: false, text: String(e) });
+    } finally {
+      setUpJob(null);
     }
   };
 
@@ -500,12 +546,13 @@ export function AiTab(p: {
 
       {/* Tool sub-menu: a dot marks a tool that is applied to this photo, pulsing while it runs */}
       <div className="border-b border-neutral-800 px-3 py-2">
-        <div className="grid grid-cols-4 overflow-hidden rounded bg-neutral-800 text-[11px]" role="tablist">
+        <div className="grid grid-cols-5 overflow-hidden rounded bg-neutral-800 text-[11px]" role="tablist">
           {(
             [
               ["tone", "Enhance", "Tone & color: AI auto adjust and creative looks", adjusting, false, "text-amber-500"],
               ["align", "Align", "Geometry: level the horizon and straighten verticals", !!alignJob, hasAlignment, "text-cyan-500"],
               ["denoise", "Denoise", "Detail: neural denoise", !!job, hasDenoised && denoiseEnabled, "text-emerald-500"],
+              ["upscale", "Upscale", "Detail: AI upscale (Real-ESRGAN) into a new, larger photo", !!upJob, false, "text-sky-500"],
               ["retouch", "Retouch", "Object removal, generative fill, face swap and their layers", removing || !!swapJob, layerCount > 0, "text-violet-500"],
             ] as const
           ).map(([t, label, title, busy, on, hue]) => (
@@ -835,6 +882,110 @@ export function AiTab(p: {
         ) : (
           <div className="rounded border border-neutral-800 bg-neutral-900/50 p-2.5">
             <p className="text-neutral-400">Needs an AI Denoise model (SCUNet or NAFNet).</p>
+            <Btn active className="mt-2" onClick={p.onOpenModels}>
+              Download in Settings → AI models
+            </Btn>
+          </div>
+        )}
+      </Panel>
+      )}
+
+      {/* 3b. DETAIL — AI UPSCALE (Real-ESRGAN), into a new photo */}
+      {sub === "upscale" && (
+      <Panel
+        title={
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className={HUE.blue.text}>
+              <Icon d="M4 14v6h6M20 10V4h-6M4 20l7-7M20 4l-7 7" />
+            </span>
+            <span className="truncate">Detail · AI Upscale</span>
+          </span>
+        }
+        right={<span className={upModel ? TINT.neutral.pill : TINT.amber.pill}>{upModel ? "Ready" : "Not installed"}</span>}
+      >
+        {upModel ? (
+          <>
+            <p className="text-neutral-400 leading-relaxed">
+              Enlarges this photo with Real-ESRGAN, which paints in believable fine detail, and saves it as a new, larger photo next to the original. The original is untouched.
+            </p>
+            <div className="mt-2 grid grid-cols-[1fr_auto] gap-2">
+              <label className="min-w-0">
+                <div className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">Model</div>
+                <select
+                  className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-[11px] text-neutral-100 outline-none focus:border-sky-600"
+                  value={upModel.id}
+                  disabled={!!upJob}
+                  onChange={(e) => setUpModelId(e.target.value)}
+                >
+                  {upscaleModels.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.id.includes("anime") ? "Drawings & anime" : "Photos"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <div className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">Enlarge</div>
+                <select
+                  className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-[11px] text-neutral-100 outline-none focus:border-sky-600"
+                  value={upScale}
+                  disabled={!!upJob}
+                  onChange={(e) => setUpScale(+e.target.value)}
+                >
+                  {[2, 3, 4].map((n) => (
+                    <option key={n} value={n}>
+                      {n} ×
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <Btn
+                active
+                className="flex-1"
+                disabled={photoId == null || !!upJob}
+                onClick={() => void upscale()}
+                title="Makes a new, larger photo; the original is not changed"
+              >
+                {upJob ? (upJob.total > 1 ? `Enlarging… ${upJob.percent}%` : "Starting…") : `✦ AI Upscale ${upScale} ×`}
+              </Btn>
+              {upJob && (
+                <Btn onClick={() => void api.cancelJob("ai-upscale")} title="Stop">
+                  Cancel
+                </Btn>
+              )}
+            </div>
+            {upJob && (
+              <AiProgressBar
+                title="AI Upscale"
+                label={upJob.label}
+                done={upJob.done}
+                total={upJob.total}
+                percent={upJob.percent}
+                modelName={upModel.name}
+                elapsedSec={upJob.elapsedSec}
+                onCancel={() => void api.cancelJob("ai-upscale")}
+              />
+            )}
+            {made && (
+              <div className={`mt-2 flex items-center justify-between gap-2 rounded border px-2.5 py-1.5 text-[10px] ${TINT.emerald.box}`}>
+                <span className="min-w-0 break-words">New photo made{made.size ? `: ${made.size}` : ""}. It is in your library.</span>
+                {p.onOpenPhoto && (
+                  <Btn className="shrink-0" onClick={() => p.onOpenPhoto?.(made.id)}>
+                    Open
+                  </Btn>
+                )}
+              </div>
+            )}
+            <p className={hint}>
+              A big photo is enlarged less to stay under {UPSCALE_MAX_MP} MP, and takes minutes: it works in tiles. The new photo gets this one&apos;s edits, but not its AI layers (denoise, removals). Using{" "}
+              <span className="text-neutral-300">{upModel.name}</span>; more in {modelsLink}.
+            </p>
+          </>
+        ) : (
+          <div className="rounded border border-neutral-800 bg-neutral-900/50 p-2.5">
+            <p className="text-neutral-400">Needs an AI upscale model (Real-ESRGAN x4plus for photos, anime 6B for drawings).</p>
             <Btn active className="mt-2" onClick={p.onOpenModels}>
               Download in Settings → AI models
             </Btn>

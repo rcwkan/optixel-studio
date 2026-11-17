@@ -1,4 +1,4 @@
-//! AI denoise: downloadable ONNX models, a hardware check that recommends the best one the GPU can
+//! AI denoise and upscale: downloadable ONNX models, a hardware check that recommends the best one the GPU can
 //! run, and tiled inference through ONNX Runtime (DirectML on Windows GPUs, CPU as the fallback).
 //!
 //! Models are third-party ONNX exports hosted on Hugging Face; every file is size- and SHA-256-checked
@@ -6,7 +6,7 @@
 //! ponytail: three models, ranked by hand; add a row to `MODELS` for a new one. Inference runs a tile at
 //! a time on one session; batching tiles would be the next speed-up if a big GPU sits idle.
 
-use crate::develop::{Img, M2020_709, es, mul, srgb_oetf, srgb_to_working};
+use crate::develop::{Img, M709_2020, M2020_709, es, mul, srgb_eotf, srgb_oetf, srgb_to_working};
 use ort::{ep, session::Session, value::Tensor};
 use serde::Serialize;
 use std::{
@@ -25,7 +25,7 @@ type File = (&'static str, u64, &'static str);
 
 struct Spec {
     id: &'static str,
-    /// denoise | inpaint
+    /// denoise | upscale | inpaint
     kind: &'static str,
     name: &'static str,
     blurb: &'static str,
@@ -96,6 +96,36 @@ const MODELS: &[Spec] = &[
         rank: 10,
         multiple: 32,
         dims: Some(["", "h", "w"]),
+        gpu: true,
+        unzip: false,
+    },
+    Spec {
+        id: "realesrgan-x4plus",
+        kind: "upscale",
+        name: "Real-ESRGAN x4plus · Photo upscale",
+        blurb: "Enlarges photos 4× and paints in believable fine detail (texture, foliage, lettering). The one for photographs; 2× and 3× are made by shrinking its 4× result. Works in 256 px tiles, so a big photo takes a while.",
+        license: "BSD-3-Clause (Real-ESRGAN, Xintao Wang et al.; ONNX export by thisismert)",
+        repo: "thisismert/real-esrgan-onnx",
+        files: &[("onnx/RealESRGAN_x4plus.onnx", 67_051_640, "bf63beab74f7be18123d07f47e686367ff44d4b937fb0555d561fce10f1c468d")],
+        min_vram_mb: 0, // fixed 256 px tiles keep it near 1 GB on any GPU
+        rank: 20,
+        multiple: 1,
+        dims: Some(["", "height", "width"]),
+        gpu: true,
+        unzip: false,
+    },
+    Spec {
+        id: "realesrgan-x4plus-anime-6b",
+        kind: "upscale",
+        name: "Real-ESRGAN x4plus anime 6B · Illustration upscale",
+        blurb: "The same 4× enlarger trained on anime and flat-colour artwork, with a lighter network: clean lines and no painted-on texture. Photos come out looking drawn: use x4plus for those.",
+        license: "BSD-3-Clause (Real-ESRGAN, Xintao Wang et al.; ONNX export by thisismert)",
+        repo: "thisismert/real-esrgan-onnx",
+        files: &[("onnx/RealESRGAN_x4plus_anime_6B.onnx", 17_939_965, "eaccc72bee5ac97e5eaaf9c29323427d641b6d5774f965e3e23185ce6f6637ee")],
+        min_vram_mb: 0,
+        rank: 10,
+        multiple: 1,
+        dims: Some(["", "height", "width"]),
         gpu: true,
         unzip: false,
     },
@@ -479,6 +509,7 @@ pub fn models(data: &Path, hw: &Hardware) -> Vec<ModelInfo> {
                     _ if m.kind == "faces" => "Runs on the CPU: a fraction of a second per photo, plus decoding it.".to_string(),
                     _ if m.kind == "align" => "PyTorch-to-ONNX exported on download (~200 MB FP16 ONNX). Sub-degree (~0.1°–0.5°) horizon & vertical alignment.".to_string(),
                     _ if m.kind == "inpaint" => "A fast alternative that runs on the CPU (about 2 seconds per removal) and only continues what is around the object.".to_string(),
+                    _ if m.kind == "upscale" => "Best match for photos: it enlarges in 256 px tiles, so GPU memory is not the limit, only time.".to_string(),
                     Some(v) => format!("Best quality for {}: runs at {} px tiles in {:.0} GB.", hw.gpu.as_deref().unwrap_or("your GPU"), tile_for(Some(v)), v as f32 / 1024.0),
                     None => "Best match for this machine (GPU memory could not be read).".to_string(),
                 }
@@ -487,6 +518,8 @@ pub fn models(data: &Path, hw: &Hardware) -> Vec<ModelInfo> {
                     "Runs on your GPU; fast 0.2B diffusion inpainting with learned conditioning.".to_string()
                 } else if m.kind == "align" {
                     "PyTorch-to-ONNX exported on download (~200 MB FP16 ONNX). Ideal for interior room scenes and landscapes.".to_string()
+                } else if m.kind == "upscale" {
+                    "An alternative to the recommended one: choose by the kind of picture (see above).".to_string()
                 } else {
                     "Runs on your GPU; lower quality than the recommended one.".to_string()
                 }
@@ -605,8 +638,9 @@ pub fn download(data: &Path, id: &str, progress: &(dyn Fn(u64, u64) + Sync)) -> 
         let url = format!("https://huggingface.co/{repo}/resolve/main/{name}");
         let mut r = agent.get(&url).call().map_err(|e| format!("{name}: {e}"))?;
         let part = out.with_extension("part");
+        let _ = fs::remove_file(&part);
         let res = (|| -> Result<(), String> {
-            let mut f = fs::File::create(&part).map_err(es)?;
+            let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&part).map_err(es)?;
             let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
             let mut reader = r.body_mut().as_reader();
             let mut buf = vec![0u8; 1 << 20];
@@ -799,6 +833,157 @@ pub fn denoise_in(
         }
     }
     Ok(Img { w, h, px: out })
+}
+
+// ---------------------------------------------------------------------------
+// Upscale (Real-ESRGAN)
+// ---------------------------------------------------------------------------
+
+/// The input tile of a ×4 network (its output is 4× that). The upscalers hold 64-channel activations at the
+/// output size, so the tile stays small whatever the GPU, and CoreML/DirectML compile one fixed shape.
+const UP_TILE: usize = 256;
+/// Input pixels of context around each tile's centre that are thrown away: more than the half pixel the
+/// averaging reaches past the centre, and clear of the network's own edge effects (Real-ESRGAN pads 10).
+const UP_PAD: usize = 16;
+
+/// Area-averaging weights: output cell `x` of `xs` spans `per` source pixels, starting at `x * per - origin` in
+/// a source row of `n` pixels. Each is the first source pixel and the weights (summing to 1) from there.
+fn cells(xs: std::ops::Range<usize>, per: f64, origin: f64, n: usize) -> Vec<(usize, Vec<f32>)> {
+    xs.map(|x| {
+        let (lo, hi) = (x as f64 * per - origin, (x + 1) as f64 * per - origin);
+        let a = (lo.floor().max(0.0) as usize).min(n - 1);
+        let b = (hi.ceil().max(0.0) as usize).clamp(a + 1, n);
+        let ws: Vec<f64> = (a..b).map(|j| (((j + 1) as f64).min(hi) - (j as f64).max(lo)).max(0.0)).collect();
+        let sum: f64 = ws.iter().sum();
+        if sum <= 0.0 { (a, vec![1.0]) } else { (a, ws.iter().map(|v| (v / sum) as f32).collect()) }
+    })
+    .collect()
+}
+
+/// A square plane of side `n` averaged by `tx` across and `ty` down: one output sample per weight pair.
+fn area_avg(src: &[f32], n: usize, tx: &[(usize, Vec<f32>)], ty: &[(usize, Vec<f32>)]) -> Vec<f32> {
+    let wd = tx.len();
+    let r0 = ty.iter().map(|t| t.0).min().unwrap_or(0);
+    let r1 = ty.iter().map(|t| t.0 + t.1.len()).max().unwrap_or(0);
+    let mut tmp = vec![0f32; (r1 - r0) * wd];
+    for (r, row) in tmp.chunks_mut(wd).enumerate() {
+        let s = &src[(r0 + r) * n..(r0 + r + 1) * n];
+        for (v, (a, ws)) in row.iter_mut().zip(tx) {
+            *v = ws.iter().zip(&s[*a..]).map(|(k, p)| k * p).sum();
+        }
+    }
+    let mut out = vec![0f32; ty.len() * wd];
+    for (o, (a, ws)) in out.chunks_mut(wd).zip(ty) {
+        for (k, wk) in ws.iter().enumerate() {
+            let row = &tmp[(a + k - r0) * wd..(a + k - r0 + 1) * wd];
+            o.iter_mut().zip(row).for_each(|(v, p)| *v += wk * p);
+        }
+    }
+    out
+}
+
+/// Enlarge `img` by `scale` (1-4) with a ×4 network that `infer` runs on one `UP_TILE` tile: it gets the tile as
+/// sRGB planes (3 × T × T) and returns the 4× planes (3 × 4T × 4T). Each output pixel is the area average of the
+/// 4× result under it, written straight into the final-size picture, so the 4× image (hundreds of megapixels
+/// for a big photo) never exists. Tiles overlap by `UP_PAD` and each keeps the output pixels centred in its core,
+/// so the seams fall on whole output pixels. The network sees the picture clipped to sRGB 0-1; what the clip cut
+/// off (highlights above white of a RAW, colours outside sRGB) is added back as it was, not enlarged by the model.
+/// shortcut: the cut-off part is only area-averaged (not made sharper), and 2×/3× cost as much as 4×; upgrade
+/// if a 2× network ever ships.
+fn upscale_tiles(img: &Img, scale: f32, tick: &dyn Fn(usize, usize) -> bool, infer: &mut dyn FnMut(&[f32]) -> Result<Vec<f32>, String>) -> Result<Img, String> {
+    let (w, h) = (img.w, img.h);
+    if w == 0 || h == 0 || img.px.len() < w.saturating_mul(h) {
+        return Err("invalid or empty image for AI upscale".into());
+    }
+    let (nw, nh) = (((w as f32 * scale).round() as usize).max(1), ((h as f32 * scale).round() as usize).max(1));
+    let (sx, sy) = (nw as f64 / w as f64, nh as f64 / h as f64);
+    let (t, step) = (UP_TILE, UP_TILE - 2 * UP_PAD);
+    let (nx, ny) = (w.div_ceil(step), h.div_ceil(step));
+    let area = t * t;
+    // the output pixels (of `total`) whose centre lies in core `k`, which is `step` input pixels wide
+    let own = |k: usize, s: f64, total: usize| ((k as f64 * step as f64 * s - 0.5).ceil().max(0.0) as usize).min(total)..(((k + 1) as f64 * step as f64 * s - 0.5).ceil().max(0.0) as usize).min(total);
+    let mut out = vec![[0f32; 3]; nw * nh];
+    for ty in 0..ny {
+        for tx in 0..nx {
+            if !tick(ty * nx + tx, nx * ny) {
+                return Err("cancelled".into());
+            }
+            let (xs, ys) = (own(tx, sx, nw), own(ty, sy, nh));
+            if xs.is_empty() || ys.is_empty() {
+                continue;
+            }
+            let (x0, y0) = (tx as isize * step as isize - UP_PAD as isize, ty as isize * step as isize - UP_PAD as isize);
+            let (mut planes, mut cut) = (vec![0f32; 3 * area], vec![0f32; 3 * area]);
+            for y in 0..t {
+                let row = reflect(y0 + y as isize, h) * w;
+                for x in 0..t {
+                    let lin = mul(&M2020_709, img.px[row + reflect(x0 + x as isize, w)]);
+                    for c in 0..3 {
+                        let v = lin[c].clamp(0.0, 1.0);
+                        planes[c * area + y * t + x] = srgb_oetf(v);
+                        cut[c * area + y * t + x] = lin[c] - v;
+                    }
+                }
+            }
+            let mut up = infer(&planes)?;
+            if up.len() != 3 * 16 * area {
+                return Err(format!("the AI model returned {} values for a {t} px tile", up.len()));
+            }
+            up.iter_mut().for_each(|v| *v = v.clamp(0.0, 1.0)); // the network overshoots a little at edges
+            let (cx4, cy4) = (cells(xs.clone(), 4.0 / sx, 4.0 * x0 as f64, 4 * t), cells(ys.clone(), 4.0 / sy, 4.0 * y0 as f64, 4 * t));
+            let (cx1, cy1) = (cells(xs.clone(), 1.0 / sx, x0 as f64, t), cells(ys.clone(), 1.0 / sy, y0 as f64, t));
+            let big = std::array::from_fn::<_, 3, _>(|c| area_avg(&up[c * 16 * area..(c + 1) * 16 * area], 4 * t, &cx4, &cy4));
+            let rest = std::array::from_fn::<_, 3, _>(|c| area_avg(&cut[c * area..(c + 1) * area], t, &cx1, &cy1));
+            let wd = xs.len();
+            for j in 0..ys.len() {
+                for i in 0..wd {
+                    let k = j * wd + i;
+                    out[(ys.start + j) * nw + xs.start + i] = mul(&M709_2020, [0, 1, 2].map(|c| srgb_eotf(big[c][k]) + rest[c][k]));
+                }
+            }
+        }
+    }
+    Ok(Img { w: nw, h: nh, px: out })
+}
+
+fn upscale_spec(data: &Path, id: &str) -> Result<&'static Spec, String> {
+    let s = spec(id)?;
+    if s.kind != "upscale" {
+        return Err(format!("{} is not an upscale model", s.name));
+    }
+    if !installed(data, s) {
+        return Err("download the AI upscale model first (AI tab)".into());
+    }
+    Ok(s)
+}
+
+/// Whether `id` is an installed upscale model, with the reason when not.
+pub fn upscale_ready(data: &Path, id: &str) -> Result<(), String> {
+    upscale_spec(data, id).map(|_| ())
+}
+
+/// Enlarge `img` by `scale` (1-4) with the upscale model `id` (Real-ESRGAN), a tile at a time.
+/// `tick(done, total)` returns false to cancel.
+pub fn upscale_in(data: &Path, id: &str, img: &Img, scale: f32, tick: &dyn Fn(usize, usize) -> bool) -> Result<Img, String> {
+    let s = upscale_spec(data, id)?;
+    let mut guard = SESSION.lock().unwrap();
+    if guard.as_ref().is_none_or(|(m, t, _)| m != id || *t != UP_TILE) {
+        *guard = None; // free the old model's GPU memory first: only one model is ever loaded
+        *SD.lock().unwrap() = None;
+        crate::moebius::reset();
+        *guard = Some((id.to_string(), UP_TILE, open_session(&dir(data, s).join(s.files[0].0), s.dims, UP_TILE, s.gpu)?));
+    }
+    let session = &mut guard.as_mut().unwrap().2;
+    let (in_name, out_name) = (session.inputs()[0].name().to_string(), session.outputs()[0].name().to_string());
+    upscale_tiles(img, scale.clamp(1.0, 4.0), tick, &mut |planes| {
+        let input = Tensor::from_array(([1usize, 3, UP_TILE, UP_TILE], planes.to_vec())).map_err(|e| format!("AI input: {e}"))?;
+        let result = session.run(ort::inputs![in_name.as_str() => input]).map_err(|e| format!("AI model failed: {e}"))?;
+        let (shape, up) = result[out_name.as_str()].try_extract_tensor::<f32>().map_err(|e| format!("AI output: {e}"))?;
+        if shape.len() != 4 || shape[1] != 3 || shape[2] as usize != 4 * UP_TILE || shape[3] as usize != 4 * UP_TILE {
+            return Err(format!("the AI model returned an unexpected shape {shape:?}"));
+        }
+        Ok(up.to_vec())
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1224,6 +1409,192 @@ sd15-inpaint: mean error in the hole {err:.3} (was {:.3}) in {:?}", 0.95 - 0.45,
         let hw = Hardware { gpu: Some("Apple M4 Max".into()), vram_mb: Some(128 * 1024), device: "CoreML".into() };
         let all = models(Path::new("/tmp"), &hw);
         assert!(all.iter().any(|m| m.id == "moebius"));
+    }
+
+    const REAL_ESRGAN: [&str; 2] = ["realesrgan-x4plus", "realesrgan-x4plus-anime-6b"];
+
+    #[test]
+    fn real_esrgan_models_are_registered() {
+        for id in REAL_ESRGAN {
+            let m = spec(id).unwrap();
+            assert_eq!((m.kind, m.files.len(), m.dims, m.repo), ("upscale", 1, Some(["", "height", "width"]), "thisismert/real-esrgan-onnx"));
+            let (name, size, sha) = m.files[0];
+            assert!(name.starts_with("onnx/") && name.ends_with(".onnx") && size > 1_000_000, "{name} {size}");
+            assert!(sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()), "{id}: {sha}");
+        }
+        // a machine with no GPU still gets the photo model as the pick, and neither is installed
+        let all = models(Path::new("/nonexistent"), &Hardware { gpu: None, vram_mb: None, device: "CPU".into() });
+        let up: Vec<_> = all.iter().filter(|m| m.kind == "upscale").collect();
+        assert_eq!(up.iter().map(|m| m.id).collect::<Vec<_>>(), REAL_ESRGAN);
+        assert_eq!(up.iter().filter(|m| m.recommended).map(|m| m.id).collect::<Vec<_>>(), ["realesrgan-x4plus"]);
+        assert!(up.iter().all(|m| !m.installed && m.fits));
+        // the Enhance settings come from outside (MCP): a model of another kind or a missing one is an error, not a crash
+        let img = Img { w: 4, h: 4, px: vec![[0.5; 3]; 16] };
+        let nope = |id| upscale_in(Path::new("/nonexistent"), id, &img, 2.0, &|_, _| true).err().expect("an error");
+        assert!(nope("scunet-real-psnr").contains("not an upscale model"));
+        assert!(nope("realesrgan-x4plus").contains("download"));
+        assert!(nope("nonsense").contains("unknown AI model"));
+    }
+
+    /// A stand-in network that repeats every pixel 4 × 4.
+    fn nearest4(planes: &[f32]) -> Result<Vec<f32>, String> {
+        let t = UP_TILE;
+        let mut up = vec![0f32; 3 * 16 * t * t];
+        for c in 0..3 {
+            for y in 0..4 * t {
+                for x in 0..4 * t {
+                    up[c * 16 * t * t + y * 4 * t + x] = planes[c * t * t + y / 4 * t + x / 4];
+                }
+            }
+        }
+        Ok(up)
+    }
+
+    /// Each pixel of an `nw` × `nh` picture as the average of the `img` pixels under it, weighted by overlap,
+    /// worked out one pixel at a time with no tiles: the average of `f` of each source pixel, in f64.
+    fn averaged(img: &Img, nw: usize, nh: usize, f: &dyn Fn(Px) -> [f64; 6]) -> Vec<[f64; 6]> {
+        let (sx, sy) = (nw as f64 / img.w as f64, nh as f64 / img.h as f64);
+        let mut out = Vec::with_capacity(nw * nh);
+        for y in 0..nh {
+            for x in 0..nw {
+                let (x0, x1, y0, y1) = (x as f64 / sx, (x + 1) as f64 / sx, y as f64 / sy, (y + 1) as f64 / sy);
+                let (mut acc, mut wsum) = ([0f64; 6], 0f64);
+                for j in y0.floor() as usize..(y1.ceil() as usize).min(img.h) {
+                    for i in x0.floor() as usize..(x1.ceil() as usize).min(img.w) {
+                        let wt = (((i + 1) as f64).min(x1) - (i as f64).max(x0)) * (((j + 1) as f64).min(y1) - (j as f64).max(y0));
+                        let v = f(img.px[j * img.w + i]);
+                        (0..6).for_each(|c| acc[c] += wt * v[c]);
+                        wsum += wt;
+                    }
+                }
+                out.push(acc.map(|v| v / wsum));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn upscale_tiles_equal_a_direct_area_average() {
+        // what the clip to sRGB cuts off (colours outside it, highlights above white) and what stays: split like the real thing
+        let split = |p: Px| {
+            let l = mul(&M2020_709, p);
+            let c = l.map(|v| v.clamp(0.0, 1.0));
+            [0, 1, 2, 3, 4, 5].map(|k| if k < 3 { srgb_oetf(c[k]) as f64 } else { (l[k - 3] - c[k - 3]) as f64 })
+        };
+        let mut s = 11u32;
+        let mut rnd = move || {
+            s = s.wrapping_mul(1664525).wrapping_add(1013904223);
+            (s >> 8) as f32 / (1u32 << 24) as f32
+        };
+        // noise is the worst case for a seam: any off-by-one at a tile edge shows. 300 × 230 has a seam in both
+        // directions, 37 × 23 is smaller than one tile, 257 × 31 has one tile column more than it needs
+        for (w, h) in [(300usize, 230usize), (37, 23), (257, 31)] {
+            let img = Img { w, h, px: (0..w * h).map(|_| [rnd() * 1.3, rnd() * 1.1, rnd() * 1.2]).collect() };
+            for scale in [4.0f32, 2.0, 1.5, 1.15] {
+                let got = upscale_tiles(&img, scale, &|_, _| true, &mut nearest4).unwrap();
+                let (nw, nh) = ((w as f32 * scale).round() as usize, (h as f32 * scale).round() as usize);
+                assert_eq!((got.w, got.h), (nw, nh));
+                let want = averaged(&img, nw, nh, &split);
+                let err = got
+                    .px
+                    .iter()
+                    .zip(&want)
+                    .map(|(g, a)| {
+                        let want = mul(&M709_2020, [0, 1, 2].map(|c| (srgb_eotf(a[c] as f32) as f64 + a[c + 3]) as f32));
+                        (0..3).map(|c| (g[c] - want[c]).abs()).fold(0f32, f32::max)
+                    })
+                    .fold(0f32, f32::max);
+                assert!(err < 1e-4, "{w} × {h} at ×{scale}: off by {err}");
+            }
+        }
+        // cancelling stops it, a network that answers the wrong size is an error
+        let img = Img { w: 30, h: 30, px: vec![[0.2; 3]; 900] };
+        assert_eq!(upscale_tiles(&img, 2.0, &|_, _| false, &mut nearest4).err().as_deref(), Some("cancelled"));
+        assert!(upscale_tiles(&img, 2.0, &|_, _| true, &mut |_| Ok(vec![0.0; 10])).err().is_some_and(|e| e.contains("returned 10 values")));
+    }
+
+    #[test]
+    fn upscale_keeps_highlights_above_white() {
+        // a blown sky of a RAW in float: 3.0 in linear light survives a network that only ever sees up to 1.0
+        let img = Img { w: 20, h: 20, px: vec![[3.0, 3.0, 3.0]; 400] };
+        let out = upscale_tiles(&img, 2.0, &|_, _| true, &mut nearest4).unwrap();
+        assert!(out.px.iter().all(|p| p.iter().all(|v| (v - 3.0).abs() < 1e-3)), "{:?}", out.px[0]);
+    }
+
+    /// Set OPTIXEL_TEST_MODELS to a data folder with the Real-ESRGAN models installed (models/<id>/onnx/<file>; a
+    /// scratch folder of symlinks does). Optional: OPTIXEL_TEST_RAW=<photo> enlarges a crop of it instead of the
+    /// synthetic picture, OPTIXEL_TEST_OUT=<folder> gets a side-by-side PNG (built-in | AI) for each run.
+    #[test]
+    fn upscale_end_to_end() {
+        let Some(data) = std::env::var_os("OPTIXEL_TEST_MODELS").map(PathBuf::from) else { return };
+        let (w, h) = (300usize, 230usize);
+        let src = match std::env::var_os("OPTIXEL_TEST_RAW") {
+            Some(f) => {
+                let full = crate::develop::load(Path::new(&f), Some(1200)).unwrap();
+                let (cx, cy) = ((full.w - w) / 2, (full.h - h) / 2);
+                Img { w, h, px: (0..h).flat_map(|y| full.px[(cy + y) * full.w + cx..][..w].to_vec()).collect() }
+            }
+            None => Img {
+                w,
+                h,
+                px: (0..w * h)
+                    .map(|i| {
+                        let (x, y) = ((i % w) as f32, (i / w) as f32);
+                        let disc = (x - 190.0).hypot(y - 110.0) < 60.0;
+                        let stripes = x < 120.0 && ((x + y) / 7.0) as usize % 2 == 0;
+                        let v = 0.25 + 0.4 * x / w as f32 + if disc { 0.15 } else { 0.0 } + if stripes { 0.1 } else { 0.0 };
+                        srgb_to_working([v, v * 0.85, v * 0.6])
+                    })
+                    .collect(),
+            },
+        };
+        let enc = |img: &Img| -> Vec<[f64; 6]> { averaged(img, img.w, img.h, &|p| { let e = encode(p); [e[0] as f64, e[1] as f64, e[2] as f64, 0.0, 0.0, 0.0] }) };
+        let want = enc(&src);
+        let mut ran = 0;
+        for (id, scale) in [("realesrgan-x4plus", 2.0f32), ("realesrgan-x4plus", 4.0), ("realesrgan-x4plus-anime-6b", 1.5)] {
+            if !installed(&data, spec(id).unwrap()) {
+                eprintln!("{id}: not installed in {data:?}, skipped");
+                continue;
+            }
+            ran += 1;
+            let t0 = std::time::Instant::now();
+            let tiles = std::cell::Cell::new(0);
+            let out = upscale_in(&data, id, &src, scale, &|d, n| {
+                tiles.set(n);
+                eprint!("\r{id} ×{scale}: tile {}/{n}", d + 1);
+                true
+            })
+            .unwrap();
+            eprintln!("\n{id} ×{scale}: {} × {} in {:?} ({} tiles)", out.w, out.h, t0.elapsed(), tiles.get());
+            assert_eq!((out.w, out.h), ((w as f32 * scale).round() as usize, (h as f32 * scale).round() as usize));
+            assert!(out.px.iter().all(|p| p.iter().all(|v| v.is_finite())), "NaN or infinity in the result");
+            // shrunk back over each input pixel's footprint, it must give the input back: a tile that is off by a pixel,
+            // a wrong channel order or a seam breaks that, while the invented detail averages out
+            let back = averaged(&out, w, h, &|p| { let e = encode(p); [e[0] as f64, e[1] as f64, e[2] as f64, 0.0, 0.0, 0.0] });
+            let err = |i: usize| (0..3).map(|c| (back[i][c] - want[i][c]).abs()).sum::<f64>() / 3.0;
+            let mse = (0..w * h).map(|i| (0..3).map(|c| (back[i][c] - want[i][c]).powi(2)).sum::<f64>() / 3.0).sum::<f64>() / (w * h) as f64;
+            let psnr = 10.0 * (1.0 / mse.max(1e-12)).log10();
+            let col = |x: usize| (0..h).map(|y| err(y * w + x)).sum::<f64>() / h as f64;
+            let overall = (0..w).map(col).sum::<f64>() / w as f64;
+            let step = UP_TILE - 2 * UP_PAD;
+            let seam = (step - 2..step + 2).map(col).sum::<f64>() / 4.0;
+            eprintln!("{id} ×{scale}: shrunk back to the input {psnr:.1} dB; mean error {overall:.4}, at the tile seam (x = {step}) {seam:.4}");
+            assert!(psnr > 28.0, "{id} ×{scale}: the result does not shrink back to the input ({psnr:.1} dB)");
+            assert!(seam < 2.0 * overall + 0.002, "{id} ×{scale}: the tile seam shows ({seam:.4} against {overall:.4})");
+            if let Some(dir) = std::env::var_os("OPTIXEL_TEST_OUT").map(PathBuf::from) {
+                std::fs::create_dir_all(&dir).unwrap();
+                let plain = crate::enhance::upscale(src.clone(), scale, 0.0);
+                let mut buf = image::RgbImage::new(2 * out.w as u32, out.h as u32);
+                for (side, img) in [&plain, &out].into_iter().enumerate() {
+                    for (i, p) in img.px.iter().enumerate() {
+                        let g = encode(*p);
+                        buf.put_pixel((side * out.w + i % out.w) as u32, (i / out.w) as u32, image::Rgb(g.map(|v| (v * 255.0).round() as u8)));
+                    }
+                }
+                buf.save(dir.join(format!("{id}-x{scale}.png"))).unwrap();
+            }
+        }
+        assert!(ran > 0, "none of the Real-ESRGAN models is installed in {data:?}");
     }
 }
 
