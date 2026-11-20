@@ -16,9 +16,18 @@ pub struct Stroke {
 
 /// The painted area of the strokes over a `w` × `h` frame.
 pub fn paint(strokes: &[Stroke], w: usize, h: usize) -> Vec<bool> {
+    if w == 0 || h == 0 {
+        return vec![];
+    }
     fn disc(m: &mut [bool], w: usize, h: usize, cx: f32, cy: f32, r: f32) {
-        let (x0, x1) = ((cx - r).floor().max(0.0) as usize, ((cx + r).ceil().max(0.0) as usize).min(w - 1));
-        let (y0, y1) = ((cy - r).floor().max(0.0) as usize, ((cy + r).ceil().max(0.0) as usize).min(h - 1));
+        if !cx.is_finite() || !cy.is_finite() || !r.is_finite() {
+            return;
+        }
+        let (x0, x1) = ((cx - r).floor().max(0.0).min((w - 1) as f32) as usize, ((cx + r).ceil().max(0.0) as usize).min(w - 1));
+        let (y0, y1) = ((cy - r).floor().max(0.0).min((h - 1) as f32) as usize, ((cy + r).ceil().max(0.0) as usize).min(h - 1));
+        if x0 > x1 || y0 > y1 {
+            return;
+        }
         for y in y0..=y1 {
             for x in x0..=x1 {
                 if (x as f32 - cx).powi(2) + (y as f32 - cy).powi(2) <= r * r {
@@ -27,15 +36,24 @@ pub fn paint(strokes: &[Stroke], w: usize, h: usize) -> Vec<bool> {
             }
         }
     }
+    let max_steps = w.saturating_add(h).saturating_mul(4).max(1);
     let mut m = vec![false; w * h];
     for s in strokes {
-        let r = (s.radius * w as f32).max(1.0);
-        let px: Vec<[f32; 2]> = s.points.iter().map(|p| [p[0] * w as f32, p[1] * h as f32]).collect();
+        if !s.radius.is_finite() {
+            continue;
+        }
+        let r = (s.radius.clamp(0.0, 1.0) * w as f32).max(1.0);
+        let px: Vec<[f32; 2]> = s
+            .points
+            .iter()
+            .filter(|p| p[0].is_finite() && p[1].is_finite())
+            .map(|p| [p[0].clamp(-0.5, 1.5) * w as f32, p[1].clamp(-0.5, 1.5) * h as f32])
+            .collect();
         if let [only] = px[..] {
             disc(&mut m, w, h, only[0], only[1], r);
         }
         for pair in px.windows(2) {
-            let steps = ((pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]) / (r * 0.5).max(1.0)).ceil().max(1.0) as usize;
+            let steps = (((pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]) / (r * 0.5).max(1.0)).ceil().max(1.0) as usize).min(max_steps);
             for k in 0..=steps {
                 let t = k as f32 / steps as f32;
                 disc(&mut m, w, h, pair[0][0] + (pair[1][0] - pair[0][0]) * t, pair[0][1] + (pair[1][1] - pair[0][1]) * t, r);
@@ -48,11 +66,20 @@ pub fn paint(strokes: &[Stroke], w: usize, h: usize) -> Vec<bool> {
 /// The selection (0-1 over the frame of `img`) for the strokes, edges snapped to the picture.
 pub fn snap(img: &Img, strokes: &[Stroke]) -> Result<Vec<f32>, String> {
     let (w, h) = (img.w, img.h);
+    if w == 0 || h == 0 {
+        return Err("empty image".into());
+    }
     let painted = paint(strokes, w, h);
     if !painted.iter().any(|&p| p) {
         return Err("paint over the object first".into());
     }
-    let (win, a) = develop::snap_painted(&painted, &img.px, w, h, 0.5);
+    let thin = strokes
+        .iter()
+        .filter(|s| s.radius.is_finite())
+        .map(|s| 2.0 * (s.radius.clamp(0.0, 1.0) * w as f32).max(1.0))
+        .fold(f32::MAX, f32::min)
+        .min(w.max(h) as f32);
+    let (win, a) = develop::snap_painted(&painted, &img.px, w, h, 0.5, thin);
     let mut out = vec![0.0f32; w * h];
     for y in 0..win.h {
         for x in 0..win.w {
@@ -65,6 +92,21 @@ pub fn snap(img: &Img, strokes: &[Stroke]) -> Result<Vec<f32>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Clicks spread over the frame once vanished: the snap's blur was sized by the box around all of them and washed each one out.
+    #[test]
+    fn scattered_clicks_stay_selected() {
+        let (w, h) = (1600, 1067); // the proxy's size: the blur's cap scales with it
+        let img = Img { w, h, px: vec![[0.2, 0.3, 0.5]; w * h] };
+        for radius in [0.005, 0.012, 0.05] {
+            let strokes: Vec<Stroke> = [[0.2, 0.2], [0.7, 0.4], [0.4, 0.8]].iter().map(|&p| Stroke { points: vec![p], radius }).collect();
+            let a = snap(&img, &strokes).unwrap();
+            for s in &strokes {
+                let (x, y) = ((s.points[0][0] * w as f32) as usize, (s.points[0][1] * h as f32) as usize);
+                assert!(a[y * w + x] > 0.9, "radius {radius}: click at ({x}, {y}) vanished: {}", a[y * w + x]);
+            }
+        }
+    }
 
     /// OPTIXEL_TEST_RAW=<file> OPTIXEL_TEST_OUT=<png> OPTIXEL_TEST_STROKE=x1,y1,x2,y2,radius (fractions): snaps a stroke.
     #[test]
@@ -92,5 +134,14 @@ mod tests {
             buf.put_pixel((i % w) as u32, (i / w) as u32, image::Rgb([(c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8]));
         }
         buf.save(out).unwrap();
+    }
+
+    #[test]
+    fn handles_empty_or_non_finite_strokes_safely() {
+        let s = vec![Stroke { points: vec![[f32::NAN, 0.5], [1e20, -1e20]], radius: f32::INFINITY }];
+        assert!(paint(&s, 0, 0).is_empty());
+        let extreme = vec![Stroke { points: vec![[-100.0, 0.5], [100.0, 0.5]], radius: 1e10 }];
+        let m = paint(&extreme, 16, 16);
+        assert_eq!(m.len(), 256);
     }
 }

@@ -94,13 +94,7 @@ fn load_creds() -> std::collections::HashMap<String, String> {
 fn save_creds(creds: &std::collections::HashMap<String, String>) -> Result<(), String> {
     let path = creds_path();
     let s = serde_json::to_string_pretty(creds).map_err(es)?;
-    std::fs::write(&path, s).map_err(es)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
-    Ok(())
+    crate::write_private_file(&path, s.as_bytes())
 }
 
 pub fn set_key(id: &str, key: &str) -> Result<(), String> {
@@ -476,13 +470,7 @@ pub fn sync_antigravity_mcp(url: &str, token: &str) {
             if servers.get("optixel") != Some(&entry) {
                 servers.insert("optixel".to_string(), entry);
                 if let Ok(json_str) = serde_json::to_string_pretty(&root) {
-                    if std::fs::write(path, json_str).is_ok() {
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-                        }
-                    }
+                    let _ = crate::write_private_file(path, json_str.as_bytes());
                 }
             }
         }
@@ -506,12 +494,7 @@ fn run_cli(core: &Arc<Core>, p: &Provider, id: i64, prompt: &str, dir: &PathBuf,
     let cfg = json!({ "mcpServers": {
         "optixel": { "type": "http", "url": url, "headers": { "Authorization": format!("Bearer {token}") } }
     } });
-    std::fs::write(&mcp_config, cfg.to_string()).map_err(es)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&mcp_config, std::fs::Permissions::from_mode(0o600));
-    }
+    crate::write_private_file(&mcp_config, cfg.to_string().as_bytes())?;
     let agent_prompt = agent.unwrap_or_else(|| format!(
         "You are editing a photo in Optixel Studio through its MCP server \"optixel\". Photo id: {id}. \
          A rendered preview is at {} and histogram telemetry at {}. User goal: \"{prompt}\". \

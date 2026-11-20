@@ -142,6 +142,18 @@ pub fn immich_id(path: &str) -> Option<&str> {
     path.strip_prefix("immich://")
 }
 
+/// Validates that a remote asset identifier is a single safe URL path segment.
+fn is_safe_asset_id(id: &str) -> bool {
+    !id.is_empty()
+        && id != "."
+        && id != ".."
+        && !id.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '/' | '\\' | '?' | '#' | '%'))
+}
+
+fn is_https_url(url: &str) -> bool {
+    tauri::Url::parse(url).is_ok_and(|u| u.scheme() == "https" && u.host_str().is_some())
+}
+
 /// Photos per page when browsing an album; the grid asks for the next page as you scroll.
 const PAGE: u32 = 250;
 
@@ -200,6 +212,9 @@ fn open_from_immich(core: &Core, url: &str, key: &str, album: Option<&str>, page
         }
         for a in &assets {
             let (Some(asset), Some(name)) = (a["id"].as_str(), a["originalFileName"].as_str()) else { continue };
+            if !is_safe_asset_id(asset) {
+                continue;
+            }
             let (path, x) = (format!("immich://{asset}"), &a["exifInfo"]);
             let m = catalog::Meta {
                 // localDateTime is the wall-clock capture time, as the catalog stores it
@@ -324,6 +339,9 @@ pub fn immich_cached(core: &Core, id: &str) -> Option<PathBuf> {
 /// An Immich photo's preview (about 1440 px) straight from the server: enough to analyse it without
 /// downloading the original.
 pub fn immich_preview(core: &Core, id: &str) -> Result<image::DynamicImage, String> {
+    if !is_safe_asset_id(id) {
+        return Err("invalid Immich asset id".into());
+    }
     let (url, key) = immich(core)?;
     let mut r = agent().get(&format!("{url}/api/assets/{id}/thumbnail?size=preview")).header("x-api-key", &key).call().map_err(es)?;
     if r.status().as_u16() >= 400 {
@@ -334,6 +352,9 @@ pub fn immich_preview(core: &Core, id: &str) -> Result<image::DynamicImage, Stri
 
 /// `creds` is only asked for on a cache miss, so downloaded photos open offline.
 fn original_from_immich(core: &Core, id: &str, creds: impl FnOnce() -> Result<(String, String), String>) -> Result<PathBuf, String> {
+    if !is_safe_asset_id(id) {
+        return Err("invalid Immich asset id".into());
+    }
     let (mut it, cached) = cached_original(core, id)?;
     if let Some(p) = cached {
         return Ok(p);
@@ -498,6 +519,9 @@ pub fn google_import(core: &Arc<Core>) -> Result<Value, String> {
             for m in page["mediaItems"].as_array().into_iter().flatten() {
                 picked += 1;
                 if let (true, Some(mid), Some(base)) = (m["type"] == "PHOTO", m["id"].as_str(), m["mediaFile"]["baseUrl"].as_str()) {
+                    if !is_https_url(base) {
+                        continue;
+                    }
                     let name = m["mediaFile"]["filename"].as_str().unwrap_or_default();
                     items.push(Item { id: mid.into(), name: name.into(), url: format!("{base}=d") });
                 }
@@ -520,6 +544,9 @@ pub fn google_import(core: &Arc<Core>) -> Result<Value, String> {
 fn copy_to_service_export(base_path: &Path, default_dest: &Path, file: &str) -> Result<String, String> {
     let source_path = Path::new(file);
     let name = file_name(file);
+    if name.is_empty() {
+        return Err("invalid export filename".into());
+    }
     let export_dir = if base_path.as_os_str().is_empty() {
         default_dest.to_path_buf()
     } else if base_path.is_dir() {
@@ -1121,5 +1148,21 @@ mod tests {
         assert!(original_from_immich(&core, "u-2", creds).unwrap().ends_with("IMG_2_u2.jpg"));
         assert_eq!(immich_upload(&core, &agent(), &url, "k", p.id, &file.display().to_string()), Ok("IMG_1_u1.jpg".to_string()));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remote_asset_ids_and_urls_reject_traversal_or_plaintext() {
+        assert!(is_safe_asset_id("u-1"));
+        assert!(is_safe_asset_id("0198c1d2-7e4f-7a3b-9c5d-1e2f3a4b5c6d"));
+        assert!(!is_safe_asset_id(".."));
+        assert!(!is_safe_asset_id("../admin"));
+        assert!(!is_safe_asset_id("a/b"));
+        assert!(!is_safe_asset_id("a?token=1"));
+        assert!(!is_safe_asset_id("a#frag"));
+        assert!(!is_safe_asset_id(""));
+
+        assert!(is_https_url("https://lh3.googleusercontent.com/abc"));
+        assert!(!is_https_url("http://lh3.googleusercontent.com/abc"));
+        assert!(!is_https_url("file:///etc/passwd"));
     }
 }
