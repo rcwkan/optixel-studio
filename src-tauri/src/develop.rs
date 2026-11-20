@@ -2380,11 +2380,13 @@ fn guided(guide: &[f32], p: &[f32], w: usize, h: usize, r: f32, eps: f32) -> Vec
 /// never flood across the 0.5 boundary into the background selection.
 pub(crate) fn object_matte(points: &[[f32; 2]], px: &[Px], w: usize, h: usize, soft: f32, shift: f32) -> (Win, Vec<f32>) {
     let (lo, hi) = bounds(points, w, h);
-    matte_core(lo, hi, |win| fill(points, w, h, win), px, w, h, soft, shift)
+    matte_core(lo, hi, f32::MAX, |win| fill(points, w, h, win), px, w, h, soft, shift)
 }
 
 /// The same snapping for a painted selection: its edges move to the picture's own where the colours change.
-pub(crate) fn snap_painted(painted: &[bool], px: &[Px], w: usize, h: usize, soft: f32) -> (Win, Vec<f32>) {
+/// `thin`: the width in pixels of the thinnest stroke. The blur follows it, not the box around all the paint:
+/// scattered clicks have a huge box, and a blur sized by that washes every small disc out.
+pub(crate) fn snap_painted(painted: &[bool], px: &[Px], w: usize, h: usize, soft: f32, thin: f32) -> (Win, Vec<f32>) {
     let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
     for (i, _) in painted.iter().enumerate().filter(|(_, p)| **p) {
         let (x, y) = ((i % w) as f32, (i / w) as f32);
@@ -2394,12 +2396,13 @@ pub(crate) fn snap_painted(painted: &[bool], px: &[Px], w: usize, h: usize, soft
         return (Win { x0: 0, y0: 0, w: 0, h: 0 }, vec![]);
     }
     let raw = |win: Win| (0..win.w * win.h).map(|k| if painted[(win.y0 + k / win.w) * w + win.x0 + k % win.w] { 1.0 } else { 0.0 }).collect();
-    matte_core(lo, hi, raw, px, w, h, soft, 0.0)
+    matte_core(lo, hi, thin, raw, px, w, h, soft, 0.0)
 }
 
-fn matte_core(lo: [f32; 2], hi: [f32; 2], raw_in: impl FnOnce(Win) -> Vec<f32>, px: &[Px], w: usize, h: usize, soft: f32, shift: f32) -> (Win, Vec<f32>) {
+/// `cap`: the most the object's size (the box `lo`..`hi`, which sets the blur bands) may count as, in pixels.
+fn matte_core(lo: [f32; 2], hi: [f32; 2], cap: f32, raw_in: impl FnOnce(Win) -> Vec<f32>, px: &[Px], w: usize, h: usize, soft: f32, shift: f32) -> (Win, Vec<f32>) {
     let s = w.max(h) as f32;
-    let size = (hi[0] - lo[0]).min(hi[1] - lo[1]).max(1.0);
+    let size = (hi[0] - lo[0]).min(hi[1] - lo[1]).min(cap).max(1.0);
     let band = (0.08 * size).min(0.008 * s).max(1.0);
     let r = ((0.001 + 0.004 * soft) * s).min(0.1 * size).max(1.0);
     let k = 0.05 + 0.45 * soft;

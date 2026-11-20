@@ -62,7 +62,7 @@ On macOS, [`scripts/build.sh`](../scripts/build.sh) compiles the optimized binar
 **Packaging Steps Executed**:
 1. Builds frontend assets with Vite into `dist/`.
 2. Compiles optimized Rust binary (`profile.release` with LTO).
-3. Packages the macOS Application Bundle via Tauri: `src-tauri/target/release/bundle/macos/Optixel Studio.app`.
+3. Packages the macOS Application Bundle via Tauri: `src-tauri/target/release/bundle/macos/Optixel Studio.app`. It is ad-hoc signed (`signingIdentity: "-"` in `tauri.conf.json`) and checked with `codesign --verify --deep --strict`; the build stops if that fails.
 4. Creates a compressed DMG installer (`UDZO` format): `src-tauri/target/release/bundle/dmg/Optixel Studio_0.1.0_<arch>.dmg`.
 5. Copies finalized artifacts into `dist-packages/macos/`.
 

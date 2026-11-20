@@ -7,6 +7,7 @@ import { AutoTab, PROFILES } from "./Auto";
 import { ChannelMixerPanel, FiltersPanel, GradientMapPanel, HdrTab, HueSatPanel, LevelsPanel, SelectiveColorPanel } from "./Pro";
 import { api, FocusPeakingResult, RawInfo, ScopesData, Snap, Stroke, Develop as Dev, getPath, HistoryEntry, Mask, MaskComponent, Photo, Proof, Rendered, setPath, Settings, srgbToOklch, thumbUrl } from "./api";
 import { Btn, ColorWheel, CurveEditor, Histogram, Panel, Seg, Slider } from "./controls";
+import { lockCrop } from "./crop";
 
 export interface AiTaskState {
   prompt: string;
@@ -128,7 +129,10 @@ const ASPECTS: [string, number | null][] = [
   ["Original", 0],
   ["1:1", 1],
   ["4:5", 4 / 5],
+  ["5:7", 5 / 7],
+  ["4:3", 4 / 3],
   ["3:2", 3 / 2],
+  ["16:10", 16 / 10],
   ["16:9", 16 / 9],
 ];
 
@@ -1186,6 +1190,7 @@ export function Develop(p: Props) {
     const pts: [number, number][] = [at(e)];
     window.clearTimeout(snapTimer.current);
     setSnap(null);
+    setError(null); // "nothing could be selected" from the last stroke is stale once painting goes on
     setLive({ points: [...pts], radius: brush });
     const move = (ev: PointerEvent) => {
       const q = at(ev);
@@ -1218,6 +1223,8 @@ export function Develop(p: Props) {
     if (tool === "guides" || tool === "spot" || tool === "remove") setTool("none");
     if (t !== "ai") clearBrush();
   };
+  // like Q for spot healing: the crop tool opens the tab its options (ratio, rotate, angle) are in
+  const toggleCrop = () => (tool === "crop" ? setTool("none") : (switchTab("geometry"), setTool("crop")));
 
   const others = Array.from(new Set([...p.selected, ...p.workingPhotos.map((w) => w.id)])).filter((s) => s !== id);
   const sync = async () => {
@@ -1247,6 +1254,7 @@ export function Develop(p: Props) {
       },
       dir === 1 ? "Rotate 90° clockwise" : "Rotate 90° counter-clockwise",
     );
+    setAspect((a) => (a ? 1 / a : a)); // the crop turned with the photo; Original (0) and Free (null) have nothing to invert
   };
   const flip = (axis: "h" | "v") => {
     const cur = devRef.current;
@@ -1305,7 +1313,7 @@ export function Develop(p: Props) {
         setCompareMode((m) => (m === "split" ? "off" : "split"));
       }
     }
-    else if (e.key.toLowerCase() === "r") setTool((t) => (t === "crop" ? "none" : "crop"));
+    else if (e.key.toLowerCase() === "r") toggleCrop();
     else if (e.key.toLowerCase() === "s") setTool((t) => (t === "select" ? "none" : "select"));
     else if (e.key.toLowerCase() === "o" && maskSel != null) setOverlay((o) => !o);
     else if (e.key.toLowerCase() === "i" && maskSel != null && dev?.masks[maskSel]) change(setPath(dev, ["masks", maskSel, "invert"], !dev.masks[maskSel].invert), "Invert selection");
@@ -1370,8 +1378,8 @@ export function Develop(p: Props) {
           />
         );
   const S = slider(T, edit);
-  const reset = (key: keyof Dev, label: string) => (
-    <button className="text-[10px] font-normal normal-case text-neutral-500 hover:text-neutral-200" onClick={() => T && edit({ ...T, [key]: structuredClone(p.defaults[key]) }, `Reset ${label}`)}>
+  const reset = (key: keyof Dev, label: string, after?: () => void) => (
+    <button className="text-[10px] font-normal normal-case text-neutral-500 hover:text-neutral-200" onClick={() => (after?.(), T && edit({ ...T, [key]: structuredClone(p.defaults[key]) }, `Reset ${label}`))}>
       reset
     </button>
   );
@@ -1474,13 +1482,21 @@ export function Develop(p: Props) {
     window.addEventListener("pointerup", () => window.removeEventListener("pointermove", move), { once: true });
   };
 
-  const ratio = (a: number | null) => (a === 0 ? imgSize.w / imgSize.h : a);
+  // width / height of the frame the crop is normalised to: the photo after its 90° turns. The preview is that frame
+  // only while the crop tool is open (otherwise it is already cropped), so read the catalog size.
+  const frameAspect = (d: Dev) => {
+    const { width, height } = p.active!;
+    if (!width || !height) return imgSize.h > 0 ? imgSize.w / imgSize.h : 1; // shortcut: an uncatalogued (0) size falls back to the preview, wrong outside the crop tool; drop once scans always store a size
+    return Math.round(d.image_rotation.angle / 90) & 1 ? height / width : width / height;
+  };
+  const ratio = (a: number | null, d: Dev) => (a === 0 ? frameAspect(d) : a);
   const applyAspect = (a: number | null) => {
     setAspect(a);
-    const r = ratio(a);
-    if (!dev || r == null) return;
-    const W = imgSize.w / imgSize.h;
-    const [w, h] = W > r ? [r / W, 1] : [1, W / r];
+    if (!dev) return;
+    const r = ratio(a, dev);
+    if (r == null) return;
+    const f = frameAspect(dev);
+    const [w, h] = f > r ? [r / f, 1] : [1, f / r];
     change({ ...dev, crop: { ...dev.crop, x: (1 - w) / 2, y: (1 - h) / 2, w, h } }, "Crop aspect", "Crop aspect");
   };
   const cropDrag = (mode: string) =>
@@ -1504,18 +1520,8 @@ export function Develop(p: Props) {
           y = ny;
         }
         if (mode.includes("s")) h = clamp(h + dy, 0.05, 1 - y);
-        const r = ratio(aspect);
-        if (r != null) {
-          const W = imgSize.w / imgSize.h;
-          let nh = (w * W) / r;
-          if (nh > 1 - (mode.includes("n") ? 0 : y)) nh = 1 - (mode.includes("n") ? 0 : y);
-          w = (nh * r) / W;
-          if (mode.includes("w")) x = c0.x + c0.w - w;
-          y = mode.includes("n") ? c0.y + c0.h - nh : y;
-          h = nh;
-          x = clamp(x, 0, 1 - w);
-          y = clamp(y, 0, 1 - h);
-        }
+        const r = ratio(aspect, base);
+        if (r != null) ({ x, y, w, h } = lockCrop(mode, c0, w, h, r / frameAspect(base)));
       }
       change({ ...base, crop: { ...base.crop, x, y, w, h } }, "Crop", "Crop");
     });
@@ -2035,7 +2041,7 @@ export function Develop(p: Props) {
                 </div>
               )}
             </div>
-            <Btn active={tool === "crop"} onClick={() => setTool(tool === "crop" ? "none" : "crop")} title="Crop & straighten (R)">
+            <Btn active={tool === "crop"} onClick={toggleCrop} title="Crop & straighten (R)">
               Crop
             </Btn>
             <Btn
@@ -2823,13 +2829,17 @@ export function Develop(p: Props) {
         {/* Geometry: crop, orientation, perspective and lens, always for the whole photo */}
         {dev && W && rtab === "geometry" && (
           <>
-            <Panel title="Crop, rotate & flip" right={reset("crop", "crop")}>
+            <Panel title="Crop, rotate & flip" right={reset("crop", "crop", () => setAspect(null))}>
               <div className="mb-2 flex flex-wrap gap-1">
                 {ASPECTS.map(([label, a]) => (
-                  <Btn key={label} active={aspect === a} onClick={() => (setTool("crop"), applyAspect(a))}>
+                  // a chip stays lit in portrait too (the swapped ratio is its inverse)
+                  <Btn key={label} active={aspect === a || (!!a && !!aspect && Math.abs(a * aspect - 1) < 1e-6)} onClick={() => (setTool("crop"), applyAspect(a))}>
                     {label}
                   </Btn>
                 ))}
+                <Btn disabled={aspect === null} onClick={() => (setTool("crop"), applyAspect(1 / ratio(aspect, dev)!))} title="Swap landscape and portrait">
+                  ⇄ Swap
+                </Btn>
               </div>
               <div className="mb-2 grid grid-cols-4 gap-1">
                 <Btn onClick={() => turn(-1)} title="Rotate 90° counter-clockwise ([)">

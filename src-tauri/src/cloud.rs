@@ -208,6 +208,28 @@ fn elements<'a>(xml: &'a str, name: &str) -> Vec<&'a str> {
     out
 }
 
+/// Returns true when `candidate` shares scheme, host, and effective port with `base`.
+fn same_origin(candidate: &str, base: &str) -> bool {
+    match (tauri::Url::parse(candidate), tauri::Url::parse(base)) {
+        (Ok(a), Ok(b)) => {
+            a.scheme() == b.scheme()
+                && a.host_str().is_some()
+                && a.host_str() == b.host_str()
+                && a.port_or_known_default() == b.port_or_known_default()
+        }
+        _ => false,
+    }
+}
+
+fn validate_endpoint(ep: &str) -> Result<String, String> {
+    let ep = ep.trim().trim_end_matches('/').to_string();
+    let u = tauri::Url::parse(&ep).map_err(|_| "invalid cloud endpoint URL".to_string())?;
+    if !matches!(u.scheme(), "http" | "https") || u.host_str().is_none() {
+        return Err("the address must start with https:// (or http:// on your own network)".into());
+    }
+    Ok(ep)
+}
+
 /// The path of a URL (or the href itself when it is a path).
 fn url_path(u: &str) -> &str {
     match u.find("://") {
@@ -461,7 +483,8 @@ impl Client {
                         out.push(Entry { path: join(&path, &name), dir: e.get("folder").is_some(), size: e["size"].as_u64().unwrap_or(0), name });
                     }
                     match v["@odata.nextLink"].as_str() {
-                        Some(next) => url = next.to_string(),
+                        Some(next) if same_origin(next, graph) => url = next.to_string(),
+                        Some(_) => return Err("OneDrive returned an off-origin pagination link".into()),
                         None => break,
                     }
                 }
@@ -624,7 +647,11 @@ pub fn dropbox_start(app_key: &str) -> Result<(), String> {
 pub fn dropbox_finish(core: &Core, mut acc: Account, code: &str) -> Result<Settings, String> {
     acc.user = acc.user.trim().to_string();
     let (_, verifier) = PENDING.lock().unwrap().take().filter(|(k, _)| *k == acc.user).ok_or("start signing in to Dropbox first")?;
-    let api = if acc.endpoint.trim().is_empty() { "https://api.dropboxapi.com".to_string() } else { acc.endpoint.trim().trim_end_matches('/').to_string() };
+    let api = if acc.endpoint.trim().is_empty() {
+        "https://api.dropboxapi.com".to_string()
+    } else {
+        validate_endpoint(&acc.endpoint)?
+    };
     let tok = remote::json_of(
         "Dropbox sign-in",
         agent().post(&format!("{api}/oauth2/token")).send_form([
@@ -776,7 +803,10 @@ pub fn upload_files(core: &Core, id: &str, folder: &str, files: &[String]) -> Re
     let mut taken: HashSet<String> = client.list(&folder).unwrap_or_default().into_iter().map(|e| e.name.to_lowercase()).collect();
     let (mut done, mut failed) = (vec![], vec![]);
     for (i, f) in files.iter().enumerate() {
-        let name = Path::new(f).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let Some(name) = Path::new(f).file_name().map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.is_empty()) else {
+            failed.push("invalid file path".to_string());
+            continue;
+        };
         let name = free_name(&name, &taken);
         match client.upload(&join(&folder, &name), Path::new(f)) {
             Ok(n) => {
@@ -975,5 +1005,16 @@ mod tests {
         round_trip(onedrive.clone(), &secret, &files);
         let (_, rotated) = Client::with(&onedrive, &secret).unwrap();
         assert_eq!(rotated.as_deref(), Some(r#"{"refresh_token":"r2"}"#), "OneDrive's new refresh token is kept");
+    }
+
+    #[test]
+    fn onedrive_pagination_rejects_off_origin_links() {
+        assert!(same_origin("https://graph.microsoft.com/v1.0/page2", "https://graph.microsoft.com"));
+        assert!(same_origin("http://127.0.0.1:8080/p2", "http://127.0.0.1:8080"));
+        assert!(!same_origin("https://evil.example/v1.0/page2", "https://graph.microsoft.com"));
+        assert!(!same_origin("http://graph.microsoft.com/v1.0/page2", "https://graph.microsoft.com"));
+        assert!(!same_origin("https://graph.microsoft.com:8443/v1.0/page2", "https://graph.microsoft.com"));
+        assert!(validate_endpoint("https://api.dropboxapi.com/").is_ok());
+        assert!(validate_endpoint("file:///etc/passwd").is_err());
     }
 }

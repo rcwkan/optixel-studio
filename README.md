@@ -47,11 +47,11 @@ Intel Macs are not supported, because the on-device AI engine (ONNX Runtime with
 
 1. Open the `.dmg` and drag **Optixel Studio** into **Applications**.
 2. Open it from Applications. The app is not yet notarized by Apple, so macOS will show one of these warnings the first time:
-   - **"Optixel Studio is damaged and can't be opened"**: macOS has quarantined the download. Run this in Terminal, then open the app again:
+   - **"Apple could not verify Optixel Studio is free of malware"**: click **Done**, go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. No Terminal needed. (On macOS 14 and earlier, Control-click the app and choose **Open**.)
+   - **"Optixel Studio is damaged and can't be opened"**: macOS found no valid signature, for example on a download from an older release or one repacked by another tool. Run this in Terminal, then open the app again:
      ```bash
      xattr -cr "/Applications/Optixel Studio.app"
      ```
-   - **"Apple could not verify Optixel Studio is free of malware"**: click **Done**, go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. (On macOS 14 and earlier, Control-click the app and choose **Open**.)
 
 > [!NOTE]
 > Don't choose **Move to Trash** on the "damaged" warning. The app is fine; macOS blocks unsigned downloads by default. Use the `xattr` command above instead.

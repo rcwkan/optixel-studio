@@ -141,6 +141,30 @@ pub fn new_token() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// Write sensitive data (credentials, MCP tokens, settings) with `0o600` permissions from creation on Unix.
+pub(crate) fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(es)?;
+        f.write_all(contents).map_err(es)?;
+        f.flush().map_err(es)?;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, contents).map_err(es)
+    }
+}
+
 /// Default catalog location in standard OS application data directory.
 pub fn default_data_dir() -> PathBuf {
     #[cfg(test)]
@@ -363,12 +387,7 @@ impl Core {
         }
         let path = self.dir().join("settings.json");
         let s = serde_json::to_string_pretty(&*self.settings.lock().unwrap()).map_err(es)?;
-        fs::write(&path, s).map_err(es)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600)); // holds the MCP token
-        }
+        write_private_file(&path, s.as_bytes())?; // holds the MCP token
         Ok(())
     }
 
@@ -874,7 +893,11 @@ fn lut_import(core: St, path: String) -> Result<String, String> {
     let src = Path::new(&path);
     let text = fs::read_to_string(src).map_err(|e| format!("read {path}: {e}"))?;
     develop::Lut3d::parse(&text).map_err(|e| format!("{}: {e}", src.file_name().unwrap_or_default().to_string_lossy()))?;
-    let name = src.file_name().ok_or("missing file name")?.to_string_lossy().to_string();
+    let name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .filter(|n| !n.is_empty() && n.to_ascii_lowercase().ends_with(".cube"))
+        .ok_or("LUT file must have a .cube filename")?;
     let dir = core.dir().join("luts");
     fs::create_dir_all(&dir).map_err(es)?;
     fs::write(dir.join(&name), text).map_err(es)?;
@@ -944,7 +967,7 @@ fn jpeg_lossless(core: St, id: i64, op: String, crop: Option<[i32; 4]>) -> Resul
     };
     let jpeg_bytes = fs::read(path).map_err(es)?;
     let transformed = libraw::jpeg_lossless_transform(&jpeg_bytes, op_str, crop)?;
-    let tmp = path.with_extension("lossless_tmp.jpg");
+    let tmp = path.with_extension(format!("lossless_tmp_{}.jpg", new_token()));
     fs::write(&tmp, &transformed).map_err(es)?;
     if let Err(e) = fs::rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
@@ -1314,6 +1337,10 @@ fn snap_object(core: St, id: i64, strokes: Vec<brush::Stroke>) -> Result<tauri::
         }
     }
     let (ww, wh) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
+    // an empty window would reach the page as a 0 x 0 ImageData, which throws and blanks the whole app
+    if ww == 0 || wh == 0 {
+        return Err("nothing could be selected under the paint: paint over the object itself".into());
+    }
     let mut buf = Vec::with_capacity(24 + ww * wh);
     for v in [w, h, x0, y0, ww, wh] {
         buf.extend((v as u32).to_le_bytes());
@@ -2092,4 +2119,21 @@ fn app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri:
         }
     }
     Ok(menu)
+}
+
+#[cfg(all(test, unix))]
+mod security_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn write_private_file_enforces_owner_only_permissions() {
+        let dir = std::env::temp_dir().join(format!("ols-priv-test-{}", new_token()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secret.json");
+        write_private_file(&path, b"{\"token\":\"secret\"}").unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
