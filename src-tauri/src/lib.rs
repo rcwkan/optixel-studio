@@ -1448,7 +1448,8 @@ fn ai_denoise_inplace(
         h: denoised_img.h,
         px: denoised_img.px,
     };
-    let cache_file = core.ai_cache_dir(id).join(format!("denoise_{model}.bin"));
+    let cache_file = develop::DenoisedCache::cache_path(&core.ai_cache_dir(id), &model)
+        .ok_or_else(|| format!("invalid AI denoise model id '{model}'"))?;
     cache.save(&cache_file)?;
 
     let mut d = core.develop(id)?;

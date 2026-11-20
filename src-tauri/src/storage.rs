@@ -264,6 +264,14 @@ pub fn report(core: &Core) -> Result<Value, String> {
     }))
 }
 
+fn safe_single_segment(id: &str) -> bool {
+    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains('\0') {
+        return false;
+    }
+    let mut comps = Path::new(id).components();
+    matches!((comps.next(), comps.next()), (Some(std::path::Component::Normal(_)), None))
+}
+
 /// One clean-up from the report; returns how many files, photos or history steps went.
 pub fn clean(core: &Core, what: &str) -> Result<usize, String> {
     let n = match what {
@@ -340,6 +348,9 @@ pub fn clean(core: &Core, what: &str) -> Result<usize, String> {
         }
         what if what.starts_with("ai_model:") => {
             let id = &what["ai_model:".len()..];
+            if !safe_single_segment(id) {
+                return Err(format!("invalid model id '{id}'"));
+            }
             if id == "coreml_cache" {
                 let cache_dir = core.dir().join("coreml-cache");
                 if cache_dir.is_dir() {
@@ -349,7 +360,7 @@ pub fn clean(core: &Core, what: &str) -> Result<usize, String> {
             } else {
                 if let Err(e) = aimodel::remove(&core.dir(), id) {
                     let model_dir = core.dir().join("models").join(id);
-                    if model_dir.is_dir() {
+                    if model_dir.symlink_metadata().is_ok_and(|m| !m.file_type().is_symlink() && m.is_dir()) {
                         fs::remove_dir_all(model_dir).map_err(es)?;
                     } else {
                         return Err(e);
@@ -1376,6 +1387,9 @@ mod tests {
         for k in ["thumbs", "originals", "missing", "history"] {
             assert_eq!(r["clean"][k]["count"], 0, "{k}");
         }
+        assert!(clean(&core, "ai_model:../../outside").is_err());
+        assert!(clean(&core, "ai_model:/tmp").is_err());
+        assert!(clean(&core, "ai_model:.").is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 

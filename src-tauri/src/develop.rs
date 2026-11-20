@@ -1552,6 +1552,24 @@ pub struct DenoisedCache {
 }
 
 impl DenoisedCache {
+    /// Confined path for a model's denoise cache file inside `dir`, rejecting traversal characters.
+    pub fn cache_path(dir: &Path, model: &str) -> Option<PathBuf> {
+        if model.is_empty()
+            || model.contains('/')
+            || model.contains('\\')
+            || model.contains('\0')
+            || model.contains("..")
+        {
+            return None;
+        }
+        let fname = format!("denoise_{model}.bin");
+        let mut comps = Path::new(&fname).components();
+        match (comps.next(), comps.next()) {
+            (Some(std::path::Component::Normal(_)), None) => Some(dir.join(fname)),
+            _ => None,
+        }
+    }
+
     pub fn save(&self, path: &Path) -> Result<(), String> {
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
@@ -1680,8 +1698,9 @@ fn tones_impl(src: &[Px], w: usize, h: usize, d: &Develop, overlay: Option<usize
         // AI Denoise blending if available
         if let Some(dir) = ai_cache_dir {
             if d.ai_denoise.enabled && d.ai_denoise.strength > 0.0 {
-                let cache_file = dir.join(format!("denoise_{}.bin", d.ai_denoise.model));
-                if let Ok(denoised) = DenoisedCache::load(&cache_file) {
+                if let Some(cache_file) = DenoisedCache::cache_path(dir, &d.ai_denoise.model)
+                    && let Ok(denoised) = DenoisedCache::load(&cache_file)
+                {
                     let f = (d.ai_denoise.strength / 100.0).clamp(0.0, 1.0);
                     if denoised.w == w && denoised.h == h {
                         px.par_iter_mut().zip(&denoised.px).for_each(|(p, dn)| {
@@ -5594,6 +5613,15 @@ mod gpu_tests {
         assert!(Lut3d::parse("LUT_1D_SIZE 4").is_err());
         assert!(Lut3d::parse("LUT_3D_SIZE 2\n0 0 0\n").is_err());
         assert!(Lut3d::parse(&cube(2, &|r, g, b| [r, g, b]).replace("DOMAIN_MAX 1 1 1", "DOMAIN_MAX 2 2 2")).is_err());
+    }
+
+    #[test]
+    fn denoise_cache_path_blocks_traversal() {
+        let dir = Path::new("/tmp/ai-cache");
+        assert_eq!(DenoisedCache::cache_path(dir, "nafnet-sidd-w32-fp16"), Some(dir.join("denoise_nafnet-sidd-w32-fp16.bin")));
+        assert!(DenoisedCache::cache_path(dir, "../../secret").is_none());
+        assert!(DenoisedCache::cache_path(dir, "a/b").is_none());
+        assert!(DenoisedCache::cache_path(dir, "").is_none());
     }
 }
 

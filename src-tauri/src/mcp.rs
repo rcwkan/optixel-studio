@@ -419,8 +419,13 @@ fn call_tool(core: &Arc<Core>, name: &str, a: &Value) -> Value {
         "auto_run" => {
             let function = a["function"].as_str().ok_or("function is required")?;
             let ids = parse_ids(&a["photo_ids"])?;
+            let default_settings = json!({});
+            let settings = a.get("settings").unwrap_or(&default_settings);
+            if settings.as_object().is_some_and(|o| o.contains_key("command")) {
+                return Err("enhance 'command' cannot be overridden over MCP; configure it in Settings".into());
+            }
             let job = auto::Job::start(core, &format!("mcp-{}", crate::new_token()));
-            let mut r = auto::run(core, function, &ids, a.get("settings").unwrap_or(&json!({})), &job)?;
+            let mut r = auto::run(core, function, &ids, settings, &job)?;
             if let Some(rows) = r["rows"].as_array_mut() {
                 rows.truncate(200);
             }
@@ -701,5 +706,23 @@ mod tests {
         assert!(!local_origin("http://127.0.0.1.nip.io"));
         assert!(!local_origin("https://attacker.com"));
         assert!(!local_origin("javascript:void(0)"));
+    }
+
+    #[test]
+    fn auto_run_rejects_command_override() {
+        let dir = std::env::temp_dir().join(format!("ols-mcp-sec-{}", crate::new_token()));
+        let core = Arc::new(Core::open(dir.clone()).unwrap());
+        let res = call_tool(
+            &core,
+            "auto_run",
+            &json!({
+                "function": "enhance",
+                "photo_ids": ["1"],
+                "settings": { "engine": "command", "command": "sh -c id" }
+            }),
+        );
+        assert_eq!(res["isError"], true);
+        assert!(res["content"][0]["text"].as_str().unwrap_or("").contains("command"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
