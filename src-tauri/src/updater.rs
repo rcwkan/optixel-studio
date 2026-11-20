@@ -512,20 +512,28 @@ pub fn launch_installer(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Safely open an external HTTP or HTTPS URL in the user's default web browser.
-pub fn open_browser_url(url: &str) -> Result<(), String> {
-    if !url.starts_with("http://") && !url.starts_with("https://") {
+/// Validate an external HTTP/HTTPS URL before launching it in a system browser.
+fn validate_browser_url(url: &str) -> Result<(), String> {
+    let parsed = tauri::Url::parse(url).map_err(|_| "Invalid URL".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
         return Err("Only http and https URLs can be opened".into());
     }
 
-    if url.chars().any(|c| c.is_control() || "&|;\"'<>^%`$\\".contains(c)) {
+    if url.chars().any(|c| c.is_control() || c.is_whitespace() || "&|;\"'<>^`$\\".contains(c)) {
         return Err("Invalid characters detected in URL".into());
     }
+
+    Ok(())
+}
+
+/// Safely open an external HTTP or HTTPS URL in the user's default web browser.
+pub fn open_browser_url(url: &str) -> Result<(), String> {
+    validate_browser_url(url)?;
 
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
-            .arg(url)
+            .args(["--", url])
             .spawn()
             .map_err(|e| format!("Could not open browser: {e}"))?;
     }
@@ -541,7 +549,7 @@ pub fn open_browser_url(url: &str) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         std::process::Command::new("xdg-open")
-            .arg(url)
+            .args(["--", url])
             .spawn()
             .map_err(|e| format!("Could not open browser: {e}"))?;
     }
@@ -874,5 +882,15 @@ mod tests {
         assert!(verify_installer_path(&outside_dmg, &allowed).is_err());
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn browser_url_validation() {
+        assert!(validate_browser_url("https://github.com/rcwkan/optixel-studio/releases").is_ok());
+        assert!(validate_browser_url("https://optixel.makecade.com/guide/?q=raw%20edit").is_ok());
+        assert!(validate_browser_url("javascript:alert(1)").is_err());
+        assert!(validate_browser_url("file:///etc/passwd").is_err());
+        assert!(validate_browser_url("https://example.com/?a=1&b=2").is_err()); // '&' blocked for shell/rundll32 safety
+        assert!(validate_browser_url("https://example.com/a\nb").is_err());
     }
 }

@@ -83,7 +83,7 @@ export function UpdateModal({
 
   const handleOpenGitHub = () => {
     const url = info?.html_url || "https://github.com/rcwkan/optixel-studio/releases";
-    api.openExternalUrl(url).catch(() => window.open(url, "_blank"));
+    api.openExternalUrl(url).catch(() => window.open(url, "_blank", "noopener,noreferrer"));
   };
 
   const formatReleaseDate = (isoStr?: string) => {

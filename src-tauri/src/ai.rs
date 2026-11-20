@@ -238,9 +238,14 @@ fn provider(core: &Core, id: &str) -> Result<Provider, String> {
 }
 
 fn session_dir(id: i64) -> Result<PathBuf, String> {
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("optixel-session-{id}-{ts}"));
-    std::fs::create_dir_all(&dir).map_err(es)?;
+    let dir = std::env::temp_dir().join(format!("optixel-session-{id}-{}", crate::new_token()));
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    b.create(&dir).map_err(es)?;
     Ok(dir)
 }
 
@@ -502,6 +507,11 @@ fn run_cli(core: &Arc<Core>, p: &Provider, id: i64, prompt: &str, dir: &PathBuf,
         "optixel": { "type": "http", "url": url, "headers": { "Authorization": format!("Bearer {token}") } }
     } });
     std::fs::write(&mcp_config, cfg.to_string()).map_err(es)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&mcp_config, std::fs::Permissions::from_mode(0o600));
+    }
     let agent_prompt = agent.unwrap_or_else(|| format!(
         "You are editing a photo in Optixel Studio through its MCP server \"optixel\". Photo id: {id}. \
          A rendered preview is at {} and histogram telemetry at {}. User goal: \"{prompt}\". \

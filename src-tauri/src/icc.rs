@@ -104,10 +104,22 @@ pub fn resolve_profile(name: &str, custom_dir: Option<&Path>) -> Result<Profile,
         "BarytaGloss" => paper_profile(BARYTA_GLOSS, &D50, 2.15, 2.1),
         other => {
             let p = Path::new(other);
-            let bytes = if p.is_file() {
+            let bytes = if p.is_absolute() && p.is_file() {
                 std::fs::read(p).map_err(|e| format!("ICC read {other}: {e}"))?
             } else if let Some(dir) = custom_dir {
-                let candidate = dir.join(other);
+                let single = !other.is_empty()
+                    && !other.contains('/')
+                    && !other.contains('\\')
+                    && !other.contains("..")
+                    && matches!(
+                        p.components().collect::<Vec<_>>().as_slice(),
+                        [std::path::Component::Normal(_)]
+                    );
+                if !single {
+                    return Err(format!("invalid ICC profile name '{other}'"));
+                }
+                let icc_subdir = dir.join("profiles").join("icc").join(other);
+                let candidate = if icc_subdir.is_file() { icc_subdir } else { dir.join(other) };
                 std::fs::read(&candidate).map_err(|e| format!("ICC read {}: {e}", candidate.display()))?
             } else {
                 return Err(format!("unknown ICC profile '{other}'"));
@@ -455,5 +467,14 @@ mod tests {
         let grey = Profile::new_gray(&D65, &ToneCurve::new(2.2)).unwrap().icc().unwrap();
         assert!(to_working(&grey, &mut [[0.5; 3]]).is_err());
         assert!(to_working(b"not a profile", &mut [[0.5; 3]]).is_err());
+    }
+
+    #[test]
+    fn custom_profile_resolution_blocks_traversal() {
+        let tmp = std::env::temp_dir().join(format!("ols-icc-sec-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&tmp);
+        assert!(resolve_profile("../../etc/passwd", Some(&tmp)).is_err());
+        assert!(resolve_profile("sub/evil.icc", Some(&tmp)).is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

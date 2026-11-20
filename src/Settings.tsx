@@ -1933,7 +1933,7 @@ function About({
 
   const openReleases = () => {
     const url = "https://github.com/rcwkan/optixel-studio/releases";
-    api.openExternalUrl(url).catch(() => window.open(url, "_blank"));
+    api.openExternalUrl(url).catch(() => window.open(url, "_blank", "noopener,noreferrer"));
   };
 
   return (
