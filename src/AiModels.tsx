@@ -175,7 +175,10 @@ export function AiModelsSettings({ settings, setSettings }: { settings: Settings
                 <div className="mt-1.5">
                   <div className="font-medium text-neutral-100">{hw.gpu ?? "CPU Execution"}</div>
                   <div className="text-neutral-400">
-                    {hw.vram_mb ? `${gb(hw.vram_mb)} memory · ` : ""}Inference runs on <span className="text-neutral-200">{hw.device}</span>
+                    {hw.vram_mb
+                      ? `${gb(hw.vram_mb)} memory${hw.free_vram_mb != null ? ` (${(hw.free_vram_mb / 1024).toFixed(1)} GB free)` : ""} · `
+                      : ""}
+                    Inference runs on <span className="text-neutral-200">{hw.device}</span>
                   </div>
                 </div>
               ) : (

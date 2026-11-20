@@ -51,6 +51,10 @@ pub fn reset() {
     *ALIGN_SESSION.lock().unwrap() = None;
 }
 
+pub fn loaded_model() -> Option<String> {
+    ALIGN_SESSION.lock().unwrap().as_ref().map(|(id, _)| id.clone())
+}
+
 // ============================================================================
 // Minimal Protobuf & ONNX ModelProto Builder (IR v8, Opset 17)
 // ============================================================================
@@ -1117,6 +1121,7 @@ pub fn align(
     ))
     .map_err(|e| e.to_string())?;
 
+    crate::auto::check_not_cancelled()?;
     progress("Running PerspectiveFields neural network", 2, 3);
     let mut guard = ALIGN_SESSION.lock().unwrap_or_else(|e| e.into_inner());
     if guard.as_ref().is_none_or(|(m, _)| m != model_id) {
@@ -1125,11 +1130,14 @@ pub fn align(
             .or_else(|_| crate::aimodel::open_session(&onnx_path, None, INPUT_SIZE, false))?;
         *guard = Some((model_id.to_string(), session));
     }
+    crate::auto::check_not_cancelled()?;
     let session = &mut guard.as_mut().ok_or("failed to initialize align session")?.1;
+    let cancel_run = crate::auto::CancellableRun::new()?;
 
     let outputs = session
-        .run(ort::inputs!["image" => input_tensor])
-        .map_err(|e| format!("PerspectiveFields inference failed: {e}"))?;
+        .run_with_options(ort::inputs!["image" => input_tensor], cancel_run.opts())
+        .map_err(|e| crate::auto::map_run_err(e, "PerspectiveFields inference failed"))?;
+    crate::auto::check_not_cancelled()?;
 
     let (_, grav_slice) = outputs["pred_gravity"]
         .try_extract_tensor::<f32>()

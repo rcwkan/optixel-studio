@@ -30,7 +30,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, atomic::AtomicBool},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock},
 };
 use tauri::{Emitter, Manager};
 
@@ -285,8 +285,8 @@ pub struct Core {
     pub settings: Mutex<Settings>,
     pub selection: Mutex<Vec<i64>>,
     pub mcp_status: Mutex<String>,
-    /// Cancel flags of the running jobs (auto functions, duplicating), by job id.
-    pub jobs: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// Cancel controls of the running jobs (auto functions, AI jobs, duplicating), by job id.
+    pub jobs: Mutex<HashMap<String, Arc<auto::JobControl>>>,
     cache: Mutex<Vec<((String, develop::Raw), Arc<Img>)>>,
     /// The one full-size decode kept for zoomed views (24 MP is ~300 MB of floats).
     full: Mutex<Option<((String, develop::Raw), Arc<Img>)>>,
@@ -1082,8 +1082,13 @@ fn ai_align(core: St, id: i64, develop: Develop, model: String, mode: String) ->
     let p = core.photo(id)?;
     let job = crate::auto::Job::start(&core, "ai-align");
     let proxy = core.proxy(&p.path)?;
+    if job.cancelled() {
+        return Err("cancelled".into());
+    }
     perspective::align(&core.dir(), &model, &proxy, &develop, &mode, &|label, done, total| {
-        job.progress(label, done, total);
+        if !job.cancelled() {
+            job.progress(label, done, total);
+        }
     })
 }
 
@@ -1278,6 +1283,12 @@ fn ai_models(core: St) -> Value {
     json!({ "hardware": hw, "models": models })
 }
 
+/// Pre-start GPU memory check (with 20% safety buffer) for an AI model before inference starts.
+#[tauri::command(async)]
+fn ai_check_vram(model: String) -> Result<aimodel::VramCheck, String> {
+    aimodel::check_vram(&model)
+}
+
 /// Download an AI model (progress arrives as `ai-model-progress`).
 #[tauri::command(async)]
 fn ai_download(core: St, id: String) -> Result<(), String> {
@@ -1334,12 +1345,21 @@ fn ai_inpaint_inplace(
     let job = crate::auto::Job::start(&core, "ai-remove");
     let file = core.local_file(&p.path)?;
     let img = core.decode(&file, None)?;
+    if job.cancelled() {
+        return Err("cancelled".into());
+    }
     let proxy = core.proxy(&p.path)?;
     let alpha = brush::snap(&proxy, &strokes)?;
     let hole = aimodel::hole_from_alpha(&alpha, proxy.w, proxy.h, img.w, img.h).ok_or("nothing is selected to remove")?;
+    if job.cancelled() {
+        return Err("cancelled".into());
+    }
 
     job.progress("Preparing hole & context", 0, 25);
     let patch = aimodel::inpaint_patch(&core.dir(), &model, &img, &hole, grow.min(40), &prompt, &|done, total| {
+        if job.cancelled() {
+            return false;
+        }
         let label = if total > 3 {
             format!("Diffusion step {} of {}", (done + 1).min(total), total)
         } else if total == 3 {
@@ -1352,8 +1372,11 @@ fn ai_inpaint_inplace(
             "Removing object".to_string()
         };
         job.progress(&label, done, total);
-        !job.cancelled()
+        true
     })?;
+    if job.cancelled() {
+        return Err("cancelled".into());
+    }
 
     let removal_id = new_token()[..12].to_string();
     let patch_filename = format!("patch_{removal_id}.bin");
@@ -1394,13 +1417,22 @@ fn ai_face_swap(core: St, id: i64, model: String, source: i64) -> Result<Develop
     let job = crate::auto::Job::start(&core, "ai-faceswap");
     let src = core.decode(&core.local_file(&s.path)?, Some(2048))?;
     let img = core.decode(&core.local_file(&p.path)?, None)?;
+    if job.cancelled() {
+        return Err("cancelled".into());
+    }
     if img.w == 0 || img.h == 0 {
         return Err("target photo has invalid dimensions".into());
     }
     let patches = aimodel::face_swap(&core.dir(), &model, &img, &src, &|label, done, total| {
+        if job.cancelled() {
+            return false;
+        }
         job.progress(label, done, total);
-        !job.cancelled()
+        true
     })?;
+    if job.cancelled() {
+        return Err("cancelled".into());
+    }
     let name = Path::new(&s.path).file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
     let mut d = core.develop(id)?;
     let ai_dir = core.ai_cache_dir(id);
@@ -1428,20 +1460,32 @@ fn ai_denoise_inplace(
     // decoded as the photo's own RAW settings decode it, so the cache lines up with what is rendered
     let raw_settings = core.develop(id).map(|d| d.raw).unwrap_or_default();
     let img = (*core.full_image_with(&p.path, &raw_settings)?).clone();
+    if job.cancelled() {
+        return Err("cancelled".into());
+    }
     let vram = aimodel::hardware().vram_mb;
     // a RAW is denoised in its camera's own RGB, before the colour matrix mixes the channels' noise
     let space = develop::is_raw(&file).then(|| fs::read(&file).ok().and_then(|b| libraw::camera_space(&b))).flatten();
+    if job.cancelled() {
+        return Err("cancelled".into());
+    }
 
     job.progress(if space.is_some() { "Starting AI denoise (camera RGB)" } else { "Starting AI denoise" }, 0, 1);
     let denoised_img = aimodel::denoise_in(&core.dir(), &model, img, 100.0, vram, space, &|done, total| {
+        if job.cancelled() {
+            return false;
+        }
         let label = if total > 1 {
             format!("Denoising tile {} of {}", (done + 1).min(total), total)
         } else {
             "Denoising photo".to_string()
         };
         job.progress(&label, done + 1, total);
-        !job.cancelled()
+        true
     })?;
+    if job.cancelled() {
+        return Err("cancelled".into());
+    }
 
     let cache = develop::DenoisedCache {
         w: denoised_img.w,
@@ -1929,6 +1973,7 @@ pub fn run() {
             save_settings,
             gpu_info,
             ai_models,
+            ai_check_vram,
             ai_download,
             ai_remove,
             ai_inpaint_inplace,

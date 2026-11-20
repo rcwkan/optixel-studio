@@ -1,6 +1,6 @@
 [package]
 name = "optixel-studio"
-version = "0.3.3"
+version = "0.3.4"
 description = "Optixel Studio: non-destructive RAW processor and DAM with a built-in MCP server"
 authors = ["Optixel Studio contributors"]
 license = "MIT"

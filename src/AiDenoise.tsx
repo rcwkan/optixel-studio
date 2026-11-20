@@ -2,6 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { AiModel, AlignResult, api, Develop as Dev, Photo, Settings, Stroke, thumbUrl } from "./api";
+import { useAiVramGate } from "./AiVramModal";
 import { PROFILES } from "./Auto";
 import { Btn, HUE, Icon, Panel, Slider } from "./controls";
 
@@ -55,6 +56,7 @@ export type AiJobProgress = {
   percent: number;
   startTime: number;
   elapsedSec: number;
+  cancelling?: boolean;
 };
 
 /** The biggest result AI Upscale makes: a bigger photo is enlarged less (the file is a 32-bit TIFF, hundreds of MB) */
@@ -69,6 +71,7 @@ function AiProgressBar({
   percent,
   modelName,
   elapsedSec,
+  cancelling,
   onCancel,
 }: {
   title: string;
@@ -78,6 +81,7 @@ function AiProgressBar({
   percent: number;
   modelName?: string;
   elapsedSec: number;
+  cancelling?: boolean;
   onCancel?: () => void;
 }) {
   const isIndeterminate = total <= 1 && done === 0;
@@ -89,7 +93,7 @@ function AiProgressBar({
   };
 
   const remainingSec =
-    done > 0 && total > done && elapsedSec > 0
+    !cancelling && done > 0 && total > done && elapsedSec > 0
       ? Math.round((elapsedSec / done) * (total - done))
       : null;
 
@@ -123,7 +127,9 @@ function AiProgressBar({
       {/* Live step label & timer */}
       <div className="flex items-center justify-between gap-2 text-[10px] text-neutral-400">
         <div className="truncate">
-          {label ? (
+          {cancelling ? (
+            <span className="text-neutral-200 font-medium">Cancelling…</span>
+          ) : label ? (
             <span className="text-neutral-200 font-medium">{label}</span>
           ) : total > 1 ? (
             <span>Step {done} of {total}</span>
@@ -145,11 +151,12 @@ function AiProgressBar({
         <div className="flex justify-end pt-1 border-t border-neutral-900">
           <button
             type="button"
+            disabled={cancelling}
             onClick={onCancel}
-            className="rounded px-2 py-0.5 text-[10px] text-neutral-400 hover:text-[var(--tint-red-text)] hover:bg-neutral-900 border border-neutral-800 transition-colors"
+            className="rounded px-2 py-0.5 text-[10px] text-neutral-400 hover:text-[var(--tint-red-text)] hover:bg-neutral-900 border border-neutral-800 transition-colors disabled:opacity-50"
             title="Cancel this AI operation"
           >
-            ✕ Cancel
+            {cancelling ? "Cancelling…" : "✕ Cancel"}
           </button>
         </div>
       )}
@@ -211,6 +218,7 @@ export function AiTab(p: {
   /** which tool is showing: one at a time, so nothing needs scrolling to reach */
   const [sub, setSub] = useState<"tone" | "align" | "denoise" | "upscale" | "retouch">("tone");
   const [rsub, setRsub] = useState<"remove" | "face">("remove");
+  const { confirmVram, modal: vramModal } = useAiVramGate();
 
   useEffect(() => void api.aiModels().then((r) => setModels(r.models), () => setModels([])), []);
   useEffect(() => {
@@ -233,56 +241,20 @@ export function AiTab(p: {
         return;
       }
       const pct = ev.total > 0 ? Math.min(100, Math.round((ev.done / ev.total) * 100)) : 0;
-      if (ev.job === "ai-denoise") {
-        setJob((prev) => ({
-          label: ev.label || "AI Denoising…",
-          done: ev.done,
-          total: ev.total,
-          percent: pct,
-          startTime: prev?.startTime ?? Date.now(),
-          elapsedSec: Math.floor((Date.now() - (prev?.startTime ?? Date.now())) / 1000),
-        }));
-      }
-      if (ev.job === "ai-align") {
-        setAlignJob((prev) => ({
-          label: ev.label || "Estimating perspective fields…",
-          done: ev.done,
-          total: ev.total,
-          percent: pct,
-          startTime: prev?.startTime ?? Date.now(),
-          elapsedSec: Math.floor((Date.now() - (prev?.startTime ?? Date.now())) / 1000),
-        }));
-      }
-      if (ev.job === "ai-faceswap") {
-        setSwapJob((prev) => ({
-          label: ev.label || "Swapping faces…",
-          done: ev.done,
-          total: ev.total,
-          percent: pct,
-          startTime: prev?.startTime ?? Date.now(),
-          elapsedSec: Math.floor((Date.now() - (prev?.startTime ?? Date.now())) / 1000),
-        }));
-      }
-      if (ev.job === "ai-upscale") {
-        setUpJob((prev) => ({
-          label: ev.label || "Enlarging…",
-          done: ev.done,
-          total: ev.total,
-          percent: pct,
-          startTime: prev?.startTime ?? Date.now(),
-          elapsedSec: Math.floor((Date.now() - (prev?.startTime ?? Date.now())) / 1000),
-        }));
-      }
-      if (ev.job === "ai-remove") {
-        setFillJob((prev) => ({
-          label: ev.label || "Removing object…",
-          done: ev.done,
-          total: ev.total,
-          percent: pct,
-          startTime: prev?.startTime ?? Date.now(),
-          elapsedSec: Math.floor((Date.now() - (prev?.startTime ?? Date.now())) / 1000),
-        }));
-      }
+      const update = (fallback: string) => (prev: AiJobProgress | null): AiJobProgress => ({
+        label: prev?.cancelling ? "Cancelling…" : ev.label || fallback,
+        done: ev.done,
+        total: ev.total,
+        percent: pct,
+        startTime: prev?.startTime ?? Date.now(),
+        elapsedSec: Math.floor((Date.now() - (prev?.startTime ?? Date.now())) / 1000),
+        cancelling: prev?.cancelling,
+      });
+      if (ev.job === "ai-denoise") setJob(update("AI Denoising…"));
+      if (ev.job === "ai-align") setAlignJob(update("Estimating perspective fields…"));
+      if (ev.job === "ai-faceswap") setSwapJob(update("Swapping faces…"));
+      if (ev.job === "ai-upscale") setUpJob(update("Enlarging…"));
+      if (ev.job === "ai-remove") setFillJob(update("Removing object…"));
     });
     return () => void un.then((f) => f());
   }, []);
@@ -332,6 +304,16 @@ export function AiTab(p: {
   const upModel = upscaleModels.find((m) => m.id === upModelId) ?? upscaleModels[0];
   const generative = removalModel?.kind === "generate";
 
+  const cancelJob = (id: "ai-denoise" | "ai-upscale" | "ai-remove" | "ai-faceswap" | "ai-align") => {
+    const mark = (prev: AiJobProgress | null) => (prev ? { ...prev, cancelling: true, label: "Cancelling…" } : null);
+    if (id === "ai-denoise") setJob(mark);
+    if (id === "ai-upscale") setUpJob(mark);
+    if (id === "ai-remove") setFillJob(mark);
+    if (id === "ai-faceswap") setSwapJob(mark);
+    if (id === "ai-align") setAlignJob(mark);
+    void api.cancelJob(id);
+  };
+
   const autoAdjust = async () => {
     setMsg(null);
     setAdjusting(true);
@@ -345,6 +327,7 @@ export function AiTab(p: {
   const runAlign = async (mode: "horizontal" | "vertical" | "both") => {
     if (photoId == null || !alignModel || !p.dev) return;
     setMsg(null);
+    if (!(await confirmVram(alignModel.id))) return;
     setAlignJob({
       label: "Estimating dense gravity & latitude fields…",
       done: 0,
@@ -375,7 +358,7 @@ export function AiTab(p: {
         text: `Aligned (${parts.join(", ")} · vFOV ${res.vfov_deg.toFixed(1)}°).`,
       });
     } catch (e) {
-      setMsg({ ok: false, text: String(e) });
+      setMsg({ ok: false, text: String(e).toLowerCase().includes("cancel") ? "AI Align cancelled." : String(e) });
     } finally {
       setAlignJob(null);
     }
@@ -390,6 +373,7 @@ export function AiTab(p: {
   const denoise = async () => {
     if (photoId == null || !denoiseModel) return;
     setMsg(null);
+    if (!(await confirmVram(denoiseModel.id))) return;
     setJob({
       label: "Initializing denoise model…",
       done: 0,
@@ -418,6 +402,7 @@ export function AiTab(p: {
     if (photoId == null || !upModel) return;
     setMsg(null);
     setMade(null);
+    if (!(await confirmVram(upModel.id))) return;
     setUpJob({ label: "Loading the upscale model…", done: 0, total: 1, percent: 0, startTime: Date.now(), elapsedSec: 0 });
     try {
       // everything this button depends on is set here: the saved Enhance settings (denoise, engine, 48 MP cap) must not change it
@@ -427,7 +412,7 @@ export function AiTab(p: {
       else if (row?.new_id != null) setMade({ id: row.new_id, size: row.size ?? "" });
       else setMsg({ ok: false, text: row?.error ?? "AI Upscale made no photo." });
     } catch (e) {
-      setMsg({ ok: false, text: String(e) });
+      setMsg({ ok: false, text: String(e).toLowerCase().includes("cancel") ? "AI Upscale cancelled." : String(e) });
     } finally {
       setUpJob(null);
     }
@@ -436,6 +421,7 @@ export function AiTab(p: {
   const remove = async () => {
     if (photoId == null || !p.selection || !removalModel) return;
     setMsg(null);
+    if (!(await confirmVram(removalModel.id))) return;
     setRemoving(true);
     const isMoebius = removalModel.id === "moebius" || removalModel.id.startsWith("moebius");
     setFillJob({
@@ -467,6 +453,7 @@ export function AiTab(p: {
     if (photoId == null || !faceModel) return;
     setFaceQuery(null);
     setMsg(null);
+    if (!(await confirmVram(faceModel.id))) return;
     setSwapJob({ label: "Loading face models…", done: 0, total: 1, percent: 0, startTime: Date.now(), elapsedSec: 0 });
     try {
       p.setDev(await api.aiFaceSwap(photoId, faceModel.id, source));
@@ -701,6 +688,8 @@ export function AiTab(p: {
                 percent={alignJob.percent}
                 modelName={alignModel.name}
                 elapsedSec={alignJob.elapsedSec}
+                cancelling={alignJob.cancelling}
+                onCancel={() => cancelJob("ai-align")}
               />
             )}
 
@@ -858,8 +847,8 @@ export function AiTab(p: {
                   : "✦ AI Denoise"}
               </Btn>
               {job && (
-                <Btn onClick={() => void api.cancelJob("ai-denoise")} title="Stop">
-                  Cancel
+                <Btn disabled={job.cancelling} onClick={() => cancelJob("ai-denoise")} title="Stop">
+                  {job.cancelling ? "Cancelling…" : "Cancel"}
                 </Btn>
               )}
             </div>
@@ -872,7 +861,8 @@ export function AiTab(p: {
                 percent={job.percent}
                 modelName={denoiseModel.name}
                 elapsedSec={job.elapsedSec}
-                onCancel={() => void api.cancelJob("ai-denoise")}
+                cancelling={job.cancelling}
+                onCancel={() => cancelJob("ai-denoise")}
               />
             )}
             <p className={hint}>
@@ -951,8 +941,8 @@ export function AiTab(p: {
                 {upJob ? (upJob.total > 1 ? `Enlarging… ${upJob.percent}%` : "Starting…") : `✦ AI Upscale ${upScale} ×`}
               </Btn>
               {upJob && (
-                <Btn onClick={() => void api.cancelJob("ai-upscale")} title="Stop">
-                  Cancel
+                <Btn disabled={upJob.cancelling} onClick={() => cancelJob("ai-upscale")} title="Stop">
+                  {upJob.cancelling ? "Cancelling…" : "Cancel"}
                 </Btn>
               )}
             </div>
@@ -965,7 +955,8 @@ export function AiTab(p: {
                 percent={upJob.percent}
                 modelName={upModel.name}
                 elapsedSec={upJob.elapsedSec}
-                onCancel={() => void api.cancelJob("ai-upscale")}
+                cancelling={upJob.cancelling}
+                onCancel={() => cancelJob("ai-upscale")}
               />
             )}
             {made && (
@@ -1124,7 +1115,8 @@ export function AiTab(p: {
                       }
                       modelName={removalModel.name}
                       elapsedSec={fillJob?.elapsedSec ?? 0}
-                      onCancel={() => void api.cancelJob("ai-remove")}
+                      cancelling={fillJob?.cancelling}
+                      onCancel={() => cancelJob("ai-remove")}
                     />
                   )}
                 </div>
@@ -1215,7 +1207,8 @@ export function AiTab(p: {
                   percent={swapJob.percent}
                   modelName={faceModel.name}
                   elapsedSec={swapJob.elapsedSec}
-                  onCancel={() => void api.cancelJob("ai-faceswap")}
+                  cancelling={swapJob.cancelling}
+                  onCancel={() => cancelJob("ai-faceswap")}
                 />
               )}
               <p className={hint}>Only swap faces of people who agreed to it.</p>
@@ -1270,6 +1263,7 @@ export function AiTab(p: {
         )}
       </Panel>
       )}
+      {vramModal}
     </div>
   );
 }

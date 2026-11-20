@@ -395,6 +395,9 @@ pub fn model_file(data: &Path, id: &str, file: &str) -> Option<PathBuf> {
 pub struct Hardware {
     pub gpu: Option<String>,
     pub vram_mb: Option<u32>,
+    pub free_vram_mb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_vram_mb: Option<u32>,
     /// what inference will run on
     pub device: String,
 }
@@ -429,7 +432,11 @@ pub fn accel(key: &str) -> ort::ep::ExecutionProviderDispatch {
 }
 #[cfg(windows)]
 pub fn accel(_key: &str) -> ort::ep::ExecutionProviderDispatch {
-    ep::DirectML::default().build()
+    use ort::ep::directml::{DeviceFilter, PerformancePreference};
+    ep::DirectML::default()
+        .with_device_filter(DeviceFilter::Gpu)
+        .with_performance_preference(PerformancePreference::HighPerformance)
+        .build()
 }
 // ponytail: Linux runs on the CPU; add the CUDA EP when someone needs Linux GPU inference
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -449,29 +456,299 @@ fn unified_memory_mb() -> Option<u32> {
     None
 }
 
-/// The GPU's name and memory. Memory comes from `nvidia-smi` (NVIDIA); other vendors report none, which
-/// the recommendation treats as a small GPU.
-pub fn hardware() -> Hardware {
-    let smi = Command::new("nvidia-smi").args(["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"]).output().ok().filter(|o| o.status.success());
-    let (name, vram) = smi
-        .and_then(|o| {
-            let t = String::from_utf8_lossy(&o.stdout).lines().next()?.to_string();
-            let (n, m) = t.rsplit_once(',')?;
-            Some((n.trim().to_string(), m.trim().parse::<u32>().ok()))
-        })
-        .unzip();
-    let gpu = name.or_else(crate::gpu::detect);
-    let device = if gpu.is_some() { format!("GPU ({ACCEL_NAME})") } else { "CPU".to_string() };
-    Hardware { gpu, vram_mb: vram.flatten().or_else(unified_memory_mb), device }
+#[cfg(windows)]
+unsafe extern "C" {
+    fn ol_dxgi_gpu_info(
+        name_buf: *mut std::ffi::c_char,
+        name_cap: std::ffi::c_int,
+        out_total_mb: *mut u32,
+        out_free_mb: *mut u32,
+        out_budget_mb: *mut u32,
+    ) -> std::ffi::c_int;
 }
 
-/// Tile edge for the GPU memory. Bigger tiles have fewer seams, but DirectML slows down 20x and returns
-/// garbage above ~600 px for SCUNet (measured on an RTX 5070), so 512 is the ceiling whatever the memory.
-fn tile_for(vram_mb: Option<u32>) -> usize {
-    match vram_mb {
-        Some(v) if v >= 6_000 => 512,
-        _ => 384,
+#[cfg(windows)]
+fn dxgi_hardware() -> Option<(String, Option<u32>, Option<u32>, Option<u32>)> {
+    let mut buf = [0u8; 256];
+    let (mut total, mut free, mut budget) = (0u32, 0u32, 0u32);
+    let ok = unsafe {
+        ol_dxgi_gpu_info(
+            buf.as_mut_ptr() as *mut std::ffi::c_char,
+            buf.len() as std::ffi::c_int,
+            &mut total,
+            &mut free,
+            &mut budget,
+        )
+    };
+    if ok == 0 {
+        return None;
     }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..end]).trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let vram = (total > 0).then_some(total);
+    let (free_opt, budget_opt) = if budget > 0 { (Some(free), Some(budget)) } else { (None, None) };
+    Some((name, vram, free_opt, budget_opt))
+}
+
+#[cfg(not(windows))]
+fn dxgi_hardware() -> Option<(String, Option<u32>, Option<u32>, Option<u32>)> {
+    None
+}
+
+fn nvidia_smi_hardware() -> Option<(String, Option<u32>, Option<u32>)> {
+    let mut cmd = Command::new("nvidia-smi");
+    cmd.args(["--query-gpu=name,memory.total,memory.free", "--format=csv,noheader,nounits"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let o = cmd.output().ok().filter(|o| o.status.success())?;
+    let mut best: Option<(String, Option<u32>, Option<u32>)> = None;
+    for line in String::from_utf8_lossy(&o.stdout).lines() {
+        let Some((rest, free_s)) = line.rsplit_once(',') else { continue };
+        let Some((name_s, total_s)) = rest.rsplit_once(',') else { continue };
+        let total = total_s.trim().parse::<u32>().ok();
+        let free = free_s.trim().parse::<u32>().ok();
+        let row = (name_s.trim().to_string(), total, free);
+        if best.as_ref().is_none_or(|b| total.unwrap_or(0) > b.1.unwrap_or(0)) {
+            best = Some(row);
+        }
+    }
+    best
+}
+
+/// The GPU's name and memory. Uses DXGI on Windows (works across NVIDIA, AMD and Intel without spawning a
+/// console), with `nvidia-smi` fallback for dedicated/free VRAM, and unified memory on Apple Silicon.
+pub fn hardware() -> Hardware {
+    let dxgi = dxgi_hardware();
+    let need_smi = dxgi.as_ref().is_none_or(|(_, t, f, _)| t.is_none() || f.is_none());
+    let smi = if need_smi { nvidia_smi_hardware() } else { None };
+    let (name, total, free, budget) = match (dxgi, smi) {
+        (Some((dn, dt, df, db)), Some((sn, st, sf))) => {
+            let gpu_name = if !dn.is_empty() { dn } else { sn };
+            (Some(gpu_name), dt.or(st), df.or(sf), db.or(st))
+        }
+        (Some((dn, dt, df, db)), None) => (Some(dn), dt, df, db),
+        (None, Some((sn, st, sf))) => (Some(sn), st, sf, st),
+        (None, None) => (None, None, None, None),
+    };
+    let gpu = name.or_else(crate::gpu::detect);
+    let vram_mb = total.or_else(unified_memory_mb);
+    let device = if std::env::var_os("OPTIXEL_AI_CPU").is_some() || gpu.is_none() {
+        "CPU".to_string()
+    } else {
+        format!("GPU ({ACCEL_NAME})")
+    };
+    Hardware { gpu, vram_mb, free_vram_mb: free, budget_vram_mb: budget, device }
+}
+
+/// Tile edge for the GPU memory. Bigger tiles have fewer seams, but DirectML requires
+/// `with_memory_pattern(false)`: on an RTX 4060 Laptop (8 GB, 7,957 MiB DXGI budget), a 1536 × 1024
+/// SCUNet run at 512 px takes 41.89s and peaks at 7,945 MiB (paging over PCIe in the GUI),
+/// 384 px takes 13.61s and peaks at 5,877 MiB (above our 5,500 MiB GUI headroom), and
+/// 256 px takes 13.89s and peaks at only 2,589 MiB (leaving >5 GB headroom).
+fn tile_for(vram_mb: Option<u32>) -> usize {
+    if let Ok(v) = std::env::var("OPTIXEL_AI_TILE") {
+        if let Ok(t) = v.trim().parse::<usize>() {
+            if (128..=512).contains(&t) {
+                return t;
+            }
+        }
+    }
+    match vram_mb {
+        Some(v) if v >= 11_000 => 512,
+        Some(v) if v >= 9_000 => 384,
+        _ => 256,
+    }
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct VramCheck {
+    pub model_id: String,
+    pub model_name: String,
+    pub uses_gpu: bool,
+    pub gpu: Option<String>,
+    pub total_vram_mb: Option<u32>,
+    pub available_vram_mb: Option<u32>,
+    pub required_vram_mb: u32,
+    pub required_with_buffer_mb: u32,
+    pub warning: bool,
+    pub message: Option<String>,
+}
+
+fn model_uses_gpu(s: &Spec) -> bool {
+    // SAM 2.1 runs on CPU (see segment.rs) even though its spec marks `gpu: true`.
+    s.gpu && s.kind != "segment"
+}
+
+fn scunet_tile_for(vram_mb: Option<u32>, multiple: usize) -> usize {
+    let m = multiple.max(1);
+    tile_for(vram_mb).max(m * 2).max(128) / m * m
+}
+
+fn estimated_vram_mb(s: &Spec, total_vram_mb: Option<u32>) -> u32 {
+    match s.id {
+        "scunet-real-psnr" | "scunet-real-gan" => match scunet_tile_for(total_vram_mb, s.multiple) {
+            512.. => 8000,
+            384.. => 5900,
+            _ => 2600,
+        },
+        "nafnet-sidd-w32-fp16" => {
+            if tile_for(total_vram_mb) >= 512 { 2200 } else { 1500 }
+        }
+        "realesrgan-x4plus" => 1200,
+        "realesrgan-x4plus-anime-6b" => 800,
+        "moebius" => 2500,
+        "sd15-inpaint" => 4000,
+        "perspective-fields-gsv" | "perspective-fields-edina" => 1000,
+        _ => s.min_vram_mb,
+    }
+}
+
+fn check_vram_with_hw(
+    s: &Spec,
+    hw: &Hardware,
+    cpu_forced: bool,
+    already_loaded: bool,
+    reclaimable_mb: u32,
+) -> VramCheck {
+    let fmt_gb = |mb: u32| format!("{:.1} GB", mb as f32 / 1024.0);
+    let uses_gpu = model_uses_gpu(s);
+    if !uses_gpu {
+        return VramCheck {
+            model_id: s.id.to_string(),
+            model_name: s.name.to_string(),
+            uses_gpu: false,
+            gpu: hw.gpu.clone(),
+            total_vram_mb: hw.vram_mb,
+            available_vram_mb: hw.free_vram_mb.or(hw.vram_mb),
+            required_vram_mb: 0,
+            required_with_buffer_mb: 0,
+            warning: false,
+            message: None,
+        };
+    }
+
+    let required_vram_mb = estimated_vram_mb(s, hw.vram_mb);
+    let required_with_buffer_mb = ((required_vram_mb as f64) * 1.20).ceil() as u32;
+    let available_vram_mb = if hw.gpu.is_none() {
+        Some(0)
+    } else if cpu_forced {
+        hw.free_vram_mb
+    } else if let Some(free) = hw.free_vram_mb {
+        let cap = hw.budget_vram_mb.or(hw.vram_mb).unwrap_or(u32::MAX).max(free);
+        Some(free.saturating_add(reclaimable_mb).min(cap))
+    } else {
+        hw.vram_mb
+    };
+
+    let gpu_label = hw.gpu.as_deref().unwrap_or("Your GPU");
+    let (warning, message) = if cpu_forced || hw.gpu.is_none() {
+        let why = if cpu_forced {
+            "CPU inference is forced (OPTIXEL_AI_CPU)"
+        } else {
+            "No compatible GPU was detected"
+        };
+        (
+            true,
+            Some(format!(
+                "{why}. Running {} (~{} needed with a 20% buffer) will use the CPU and may take a long time.",
+                s.name,
+                fmt_gb(required_with_buffer_mb),
+            )),
+        )
+    } else if let Some(total) = hw.vram_mb.filter(|&t| t < required_with_buffer_mb) {
+        (
+            true,
+            Some(format!(
+                "{gpu_label} has {} of dedicated GPU memory, which is below the {} recommended for {} ({} + 20% buffer). Starting now may spill to system RAM and trigger a long CPU process.",
+                fmt_gb(total),
+                fmt_gb(required_with_buffer_mb),
+                s.name,
+                fmt_gb(required_vram_mb),
+            )),
+        )
+    } else if already_loaded {
+        (false, None)
+    } else if let Some(avail) = available_vram_mb.filter(|&a| a < required_with_buffer_mb) {
+        let total_note = hw.vram_mb.map(|t| format!(" of {}", fmt_gb(t))).unwrap_or_default();
+        (
+            true,
+            Some(format!(
+                "Not enough free GPU memory: {gpu_label} has {} available{total_note}, below the {} recommended for {} ({} + 20% buffer). Starting now may spill out of GPU memory or cause a long CPU process.",
+                fmt_gb(avail),
+                fmt_gb(required_with_buffer_mb),
+                s.name,
+                fmt_gb(required_vram_mb),
+            )),
+        )
+    } else {
+        (false, None)
+    };
+
+    VramCheck {
+        model_id: s.id.to_string(),
+        model_name: s.name.to_string(),
+        uses_gpu: true,
+        gpu: hw.gpu.clone(),
+        total_vram_mb: hw.vram_mb,
+        available_vram_mb,
+        required_vram_mb,
+        required_with_buffer_mb,
+        warning,
+        message,
+    }
+}
+
+/// Check before starting inference whether the active GPU has enough free memory (with a 20% buffer)
+/// for `id`, accounting for cached sessions that will be unloaded when switching models.
+pub fn check_vram(id: &str) -> Result<VramCheck, String> {
+    let s = spec(id)?;
+    let hw = hardware();
+    let cpu_forced = std::env::var_os("OPTIXEL_AI_CPU").is_some();
+
+    let cached_session = SESSION.lock().unwrap().as_ref().map(|(m, t, _)| (m.clone(), *t));
+    let cached_sd = SD.lock().unwrap().as_ref().map(|m| m.id().to_string());
+    let cached_moebius = crate::moebius::is_loaded();
+    let cached_align = crate::perspective::loaded_model();
+
+    let already_loaded = match s.kind {
+        "denoise" => {
+            let want_tile = scunet_tile_for(hw.vram_mb, s.multiple);
+            cached_session.as_ref().is_some_and(|(m, t)| m == s.id && *t == want_tile)
+        }
+        "upscale" => cached_session.as_ref().is_some_and(|(m, t)| m == s.id && *t == UP_TILE),
+        "generate" => cached_sd.as_deref() == Some(s.id),
+        "align" => cached_align.as_deref() == Some(s.id),
+        _ if s.id == "moebius" => cached_moebius,
+        _ => false,
+    };
+
+    let est_id = |mid: &str| spec(mid).ok().filter(|ms| model_uses_gpu(ms)).map_or(0, |ms| estimated_vram_mb(ms, hw.vram_mb));
+    let mut reclaimable_mb = 0u32;
+    if !already_loaded && model_uses_gpu(s) {
+        if s.kind == "align" {
+            if let Some(prev) = cached_align.as_deref() {
+                reclaimable_mb = reclaimable_mb.saturating_add(est_id(prev));
+            }
+        } else {
+            if let Some((prev, _)) = cached_session.as_ref() {
+                reclaimable_mb = reclaimable_mb.saturating_add(est_id(prev));
+            }
+            if let Some(prev) = cached_sd.as_deref() {
+                reclaimable_mb = reclaimable_mb.saturating_add(est_id(prev));
+            }
+            if cached_moebius {
+                reclaimable_mb = reclaimable_mb.saturating_add(est_id("moebius"));
+            }
+        }
+    }
+
+    Ok(check_vram_with_hw(s, &hw, cpu_forced, already_loaded, reclaimable_mb))
 }
 
 #[derive(Serialize)]
@@ -772,8 +1049,9 @@ pub fn denoise_in(
     if !installed(data, s) {
         return Err("download the AI model first (AI tab)".into());
     }
+    crate::auto::check_not_cancelled()?;
     let (w, h) = (img.w, img.h);
-    let tile = tile_for(vram_mb).max(s.multiple * 4) / s.multiple * s.multiple;
+    let tile = tile_for(vram_mb).max(s.multiple * 2).max(128) / s.multiple * s.multiple;
     let mut guard = SESSION.lock().unwrap();
     if guard.as_ref().is_none_or(|(m, t, _)| m != id || *t != tile) {
         *guard = None; // free the old model's GPU memory first: only one model is ever loaded
@@ -781,10 +1059,12 @@ pub fn denoise_in(
         crate::moebius::reset();
         *guard = Some((id.to_string(), tile, open_session(&dir(data, s).join(s.files[0].0), s.dims, tile, s.gpu)?));
     }
+    crate::auto::check_not_cancelled()?;
     let session = &mut guard.as_mut().unwrap().2;
     let (in_name, out_name) = (session.inputs()[0].name().to_string(), session.outputs()[0].name().to_string());
+    let cancel_run = crate::auto::CancellableRun::new()?;
 
-    let ov = s.multiple.max(32);
+    let ov = 32.min(tile / 4);
     let step = tile - 2 * ov;
     let amt = (strength / 100.0).clamp(0.0, 1.0);
     let (nx, ny) = (w.div_ceil(step), h.div_ceil(step));
@@ -812,7 +1092,9 @@ pub fn denoise_in(
                 planes[2 * area + i] = p[2];
             }
             let input = Tensor::from_array(([1usize, 3, tile, tile], planes)).map_err(|e| format!("AI input: {e}"))?;
-            let result = session.run(ort::inputs![in_name.as_str() => input]).map_err(|e| format!("AI model failed: {e}"))?;
+            let result = session
+                .run_with_options(ort::inputs![in_name.as_str() => input], cancel_run.opts())
+                .map_err(|e| crate::auto::map_run_err(e, "AI model failed"))?;
             let (shape, den) = result[out_name.as_str()].try_extract_tensor::<f32>().map_err(|e| format!("AI output: {e}"))?;
             if shape.len() != 4 || shape[2] as usize != tile || shape[3] as usize != tile {
                 return Err(format!("the AI model returned an unexpected shape {shape:?}"));
@@ -832,6 +1114,7 @@ pub fn denoise_in(
             }
         }
     }
+    crate::auto::check_not_cancelled()?;
     Ok(Img { w, h, px: out })
 }
 
@@ -965,6 +1248,7 @@ pub fn upscale_ready(data: &Path, id: &str) -> Result<(), String> {
 /// Enlarge `img` by `scale` (1-4) with the upscale model `id` (Real-ESRGAN), a tile at a time.
 /// `tick(done, total)` returns false to cancel.
 pub fn upscale_in(data: &Path, id: &str, img: &Img, scale: f32, tick: &dyn Fn(usize, usize) -> bool) -> Result<Img, String> {
+    crate::auto::check_not_cancelled()?;
     let s = upscale_spec(data, id)?;
     let mut guard = SESSION.lock().unwrap();
     if guard.as_ref().is_none_or(|(m, t, _)| m != id || *t != UP_TILE) {
@@ -973,17 +1257,23 @@ pub fn upscale_in(data: &Path, id: &str, img: &Img, scale: f32, tick: &dyn Fn(us
         crate::moebius::reset();
         *guard = Some((id.to_string(), UP_TILE, open_session(&dir(data, s).join(s.files[0].0), s.dims, UP_TILE, s.gpu)?));
     }
+    crate::auto::check_not_cancelled()?;
     let session = &mut guard.as_mut().unwrap().2;
     let (in_name, out_name) = (session.inputs()[0].name().to_string(), session.outputs()[0].name().to_string());
-    upscale_tiles(img, scale.clamp(1.0, 4.0), tick, &mut |planes| {
+    let cancel_run = crate::auto::CancellableRun::new()?;
+    let out = upscale_tiles(img, scale.clamp(1.0, 4.0), tick, &mut |planes| {
         let input = Tensor::from_array(([1usize, 3, UP_TILE, UP_TILE], planes.to_vec())).map_err(|e| format!("AI input: {e}"))?;
-        let result = session.run(ort::inputs![in_name.as_str() => input]).map_err(|e| format!("AI model failed: {e}"))?;
+        let result = session
+            .run_with_options(ort::inputs![in_name.as_str() => input], cancel_run.opts())
+            .map_err(|e| crate::auto::map_run_err(e, "AI model failed"))?;
         let (shape, up) = result[out_name.as_str()].try_extract_tensor::<f32>().map_err(|e| format!("AI output: {e}"))?;
         if shape.len() != 4 || shape[1] != 3 || shape[2] as usize != 4 * UP_TILE || shape[3] as usize != 4 * UP_TILE {
             return Err(format!("the AI model returned an unexpected shape {shape:?}"));
         }
         Ok(up.to_vec())
-    })
+    })?;
+    crate::auto::check_not_cancelled()?;
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -992,6 +1282,7 @@ pub fn upscale_in(data: &Path, id: &str, img: &Img, scale: f32, tick: &dyn Fn(us
 
 /// LaMa: image and mask in, the filled picture out (interleaved 0-1 at 512).
 fn lama(data: &Path, s: &Spec, rgb_in: &[f32], m_in: Vec<f32>) -> Result<Vec<f32>, String> {
+    crate::auto::check_not_cancelled()?;
     let id = s.id;
     let mut guard = SESSION.lock().unwrap();
     if guard.as_ref().is_none_or(|(m, t, _)| m != id || *t != LAMA) {
@@ -1000,9 +1291,11 @@ fn lama(data: &Path, s: &Spec, rgb_in: &[f32], m_in: Vec<f32>) -> Result<Vec<f32
         crate::moebius::reset();
         *guard = Some((id.to_string(), LAMA, open_session(&dir(data, s).join(s.files[0].0), s.dims, LAMA, s.gpu)?));
     }
+    crate::auto::check_not_cancelled()?;
     let session = &mut guard.as_mut().unwrap().2;
     let names: Vec<String> = session.inputs().iter().map(|i| i.name().to_string()).collect();
     let out_name = session.outputs()[0].name().to_string();
+    let cancel_run = crate::auto::CancellableRun::new()?;
     let area = LAMA * LAMA;
     let mut planes = vec![0f32; 3 * area];
     for i in 0..area {
@@ -1013,7 +1306,10 @@ fn lama(data: &Path, s: &Spec, rgb_in: &[f32], m_in: Vec<f32>) -> Result<Vec<f32
     let image_t = Tensor::from_array(([1usize, 3, LAMA, LAMA], planes)).map_err(|e| format!("inpaint input: {e}"))?;
     let mask_t = Tensor::from_array(([1usize, 1, LAMA, LAMA], m_in)).map_err(|e| format!("inpaint input: {e}"))?;
     let (first, second) = if names[0].to_lowercase().contains("mask") { (mask_t, image_t) } else { (image_t, mask_t) };
-    let result = session.run(ort::inputs![names[0].as_str() => first, names[1].as_str() => second]).map_err(|e| format!("the removal model failed: {e}"))?;
+    let result = session
+        .run_with_options(ort::inputs![names[0].as_str() => first, names[1].as_str() => second], cancel_run.opts())
+        .map_err(|e| crate::auto::map_run_err(e, "the removal model failed"))?;
+    crate::auto::check_not_cancelled()?;
     let (shape, out) = result[out_name.as_str()].try_extract_tensor::<f32>().map_err(|e| format!("inpaint output: {e}"))?;
     if shape.len() != 4 || shape[1] != 3 || shape[2] as usize != LAMA || shape[3] as usize != LAMA {
         return Err(format!("the removal model returned an unexpected shape {shape:?}"));
@@ -1262,6 +1558,49 @@ mod tests {
         assert!(after < before * 0.6, "denoise did not reduce the noise enough");
     }
 
+    /// Needs OPTIXEL_TEST_AI=1 and an installed denoise model: cancels mid-tile via `JobControl` / `RunOptions::terminate`
+    /// and verifies the cached ONNX session remains usable for a subsequent denoise pass.
+    #[test]
+    fn denoise_cancel_terminates_and_session_recovers() {
+        if std::env::var_os("OPTIXEL_TEST_AI").is_none() {
+            return;
+        }
+        let data = crate::data_dir();
+        let id = std::env::var("OPTIXEL_TEST_MODEL").unwrap_or_else(|_| "scunet-real-psnr".into());
+        if !installed(&data, spec(&id).unwrap()) {
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("ols-cancel-ai-{}", crate::new_token()));
+        let core = crate::Core::open(tmp.clone()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut cancel_elapsed = Duration::ZERO;
+        let res = std::thread::scope(|s| {
+            let h = s.spawn(|| {
+                let job = crate::auto::Job::start(&core, "cancel-ai-test");
+                let img = Img { w: 1200, h: 900, px: vec![[0.2, 0.2, 0.2]; 1200 * 900] };
+                denoise_in(&data, &id, img, 100.0, Some(8_000), None, &|done, _| {
+                    if done == 0 {
+                        let _ = tx.send(());
+                    }
+                    !job.cancelled()
+                })
+            });
+            rx.recv().unwrap();
+            std::thread::sleep(Duration::from_millis(150));
+            let t0 = std::time::Instant::now();
+            assert!(crate::auto::cancel(&core, "cancel-ai-test"));
+            let out = h.join().unwrap();
+            cancel_elapsed = t0.elapsed();
+            out
+        });
+        assert_eq!(res.err().as_deref(), Some("cancelled"), "expected cancelled error");
+        eprintln!("denoise cancel returned in {cancel_elapsed:?}");
+        let small = Img { w: 200, h: 200, px: vec![[0.3, 0.3, 0.3]; 200 * 200] };
+        let recovered = denoise_in(&data, &id, small, 100.0, Some(8_000), None, &|_, _| true).unwrap();
+        assert_eq!((recovered.w, recovered.h), (200, 200));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
     /// Needs OPTIXEL_TEST_AI=1: downloads LaMa and removes a blob from a striped, gradient picture.
     #[test]
     fn inpaint_end_to_end() {
@@ -1406,7 +1745,7 @@ sd15-inpaint: mean error in the hole {err:.3} (was {:.3}) in {:?}", 0.95 - 0.45,
         assert_eq!(spec("moebius-removal").unwrap().id, "moebius");
 
         // Verify models() lists Moebius for the UI
-        let hw = Hardware { gpu: Some("Apple M4 Max".into()), vram_mb: Some(128 * 1024), device: "CoreML".into() };
+        let hw = Hardware { gpu: Some("Apple M4 Max".into()), vram_mb: Some(128 * 1024), free_vram_mb: None, budget_vram_mb: None, device: "CoreML".into() };
         let all = models(Path::new("/tmp"), &hw);
         assert!(all.iter().any(|m| m.id == "moebius"));
     }
@@ -1423,7 +1762,7 @@ sd15-inpaint: mean error in the hole {err:.3} (was {:.3}) in {:?}", 0.95 - 0.45,
             assert!(sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()), "{id}: {sha}");
         }
         // a machine with no GPU still gets the photo model as the pick, and neither is installed
-        let all = models(Path::new("/nonexistent"), &Hardware { gpu: None, vram_mb: None, device: "CPU".into() });
+        let all = models(Path::new("/nonexistent"), &Hardware { gpu: None, vram_mb: None, free_vram_mb: None, budget_vram_mb: None, device: "CPU".into() });
         let up: Vec<_> = all.iter().filter(|m| m.kind == "upscale").collect();
         assert_eq!(up.iter().map(|m| m.id).collect::<Vec<_>>(), REAL_ESRGAN);
         assert_eq!(up.iter().filter(|m| m.recommended).map(|m| m.id).collect::<Vec<_>>(), ["realesrgan-x4plus"]);
@@ -1595,6 +1934,66 @@ sd15-inpaint: mean error in the hole {err:.3} (was {:.3}) in {:?}", 0.95 - 0.45,
             }
         }
         assert!(ran > 0, "none of the Real-ESRGAN models is installed in {data:?}");
+    }
+
+    #[test]
+    fn vram_check_enforces_20_percent_buffer() {
+        let scunet = spec("scunet-real-psnr").unwrap();
+        let hw = |total: Option<u32>, free: Option<u32>, budget: Option<u32>, gpu: Option<&str>| Hardware {
+            gpu: gpu.map(str::to_string),
+            vram_mb: total,
+            free_vram_mb: free,
+            budget_vram_mb: budget,
+            device: if gpu.is_some() { "GPU (DirectML)".into() } else { "CPU".into() },
+        };
+
+        // 8 GB GPU runs SCUNet at 256 px (2600 MiB base -> ceil(2600 * 1.20) = 3120 MiB)
+        assert_eq!(tile_for(Some(8188)), 256);
+        let exact_pass = check_vram_with_hw(scunet, &hw(Some(8188), Some(3120), Some(7957), Some("RTX 4060")), false, false, 0);
+        assert_eq!(exact_pass.required_vram_mb, 2600);
+        assert_eq!(exact_pass.required_with_buffer_mb, 3120);
+        assert!(!exact_pass.warning, "{:?}", exact_pass.message);
+
+        let short_fail = check_vram_with_hw(scunet, &hw(Some(8188), Some(3119), Some(7957), Some("RTX 4060")), false, false, 0);
+        assert!(short_fail.warning);
+        assert!(short_fail.message.as_deref().unwrap_or("").contains("20% buffer"));
+
+        // Low total VRAM triggers warning even before runtime pressure
+        let small_gpu = check_vram_with_hw(scunet, &hw(Some(3072), Some(3072), Some(3072), Some("Small GPU")), false, false, 0);
+        assert!(small_gpu.warning);
+
+        // Missing GPU and forced CPU both warn before starting
+        let no_gpu = check_vram_with_hw(scunet, &hw(None, None, None, None), false, false, 0);
+        assert!(no_gpu.warning);
+        let cpu_forced = check_vram_with_hw(scunet, &hw(Some(8188), Some(7000), Some(7957), Some("RTX 4060")), true, false, 0);
+        assert!(cpu_forced.warning);
+
+        // CPU-only models never emit a GPU memory warning
+        for cpu_id in ["lama-big", "hyperswap-1a", "sam3-fp16", "sam2.1-hiera-small"] {
+            let m = spec(cpu_id).unwrap();
+            let c = check_vram_with_hw(m, &hw(Some(2048), Some(100), Some(2048), Some("Small")), false, false, 0);
+            assert!(!c.uses_gpu && !c.warning, "{cpu_id}: {c:?}");
+        }
+
+        // Already-loaded session skips low free-VRAM warning when total VRAM satisfies requirement+buffer
+        let loaded = check_vram_with_hw(scunet, &hw(Some(8188), Some(500), Some(7957), Some("RTX 4060")), false, true, 0);
+        assert!(!loaded.warning);
+
+        // Reclaimable VRAM from cached previous model is credited but capped at budget
+        let reclaimed = check_vram_with_hw(scunet, &hw(Some(8188), Some(2000), Some(7957), Some("RTX 4060")), false, false, 1500);
+        assert_eq!(reclaimed.available_vram_mb, Some(3500));
+        assert!(!reclaimed.warning);
+        let capped = check_vram_with_hw(scunet, &hw(Some(8188), Some(7000), Some(7957), Some("RTX 4060")), false, false, 2000);
+        assert_eq!(capped.available_vram_mb, Some(7957));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dxgi_reports_windows_gpu_and_free_vram() {
+        let hw = hardware();
+        assert!(hw.gpu.is_some(), "expected GPU on Windows test host");
+        assert!(hw.vram_mb.unwrap_or(0) > 0, "expected positive total VRAM");
+        assert!(hw.free_vram_mb.unwrap_or(0) > 0, "expected positive free VRAM");
     }
 }
 

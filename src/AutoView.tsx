@@ -1,6 +1,7 @@
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { api, AutoFunction, AutoResult, AutoSettings, JobProgress, LABEL_COLORS, Photo, Settings, thumbUrl } from "./api";
+import { useAiVramGate } from "./AiVramModal";
 import { CompareGroup, CompareModal } from "./CompareModal";
 import { Btn, HUE, Hue, Icon, Seg, Stars } from "./controls";
 
@@ -530,12 +531,22 @@ export function AutoView(p: AutoViewProps) {
   const changed = defaults ? more.filter((f) => f.kind !== "heading" && JSON.stringify(s[f.k]) !== JSON.stringify((defaults[fn] as unknown as Rec)[f.k])).length : 0;
   const provider = p.settings.providers.find((x) => x.id === p.settings!.active_provider);
   const counts = { selected: p.selected.length, view: p.view.length, all: total ?? 0 };
+  const { confirmVram, modal: vramModal } = useAiVramGate();
 
   const run = async (f: AutoFunction) => {
     const settings = latest.current!.auto[f];
     setErrors((e) => ({ ...e, [f]: undefined }));
     const ids = scope === "selected" ? p.selected : scope === "view" ? p.view.map((x) => x.id) : (await api.query({})).map((x) => x.id);
     if (!ids.length) return setErrors((e) => ({ ...e, [f]: scope === "selected" ? "Select photos in the Library first." : "There are no photos here." }));
+    if (f === "enhance") {
+      const enh = settings as AutoSettings["enhance"];
+      const modelIds: string[] = [];
+      if (enh.engine === "ai" && enh.denoise && enh.ai_model) modelIds.push(enh.ai_model);
+      if (enh.engine !== "command" && enh.super_resolution && enh.upscale_model) modelIds.push(enh.upscale_model);
+      for (const mid of [...new Set(modelIds)]) {
+        if (!(await confirmVram(mid))) return;
+      }
+    }
     const job = `${f}-${Date.now()}`;
     setRunning((r) => ({ ...r, [f]: job }));
     try {
@@ -652,6 +663,7 @@ export function AutoView(p: AutoViewProps) {
           {p.settings.auto.on_import.enabled ? "on" : "off"} · Settings › Locations
         </button>
       )}
+      {vramModal}
     </div>
   );
 }

@@ -365,6 +365,7 @@ export type EnhanceSettings = {
   max_megapixels: number;
   /** An AI upscale model id (realesrgan-x4plus, realesrgan-x4plus-anime-6b); empty: the built-in Lanczos */
   upscale_model: string;
+  ai_model?: string;
   engine: string;
   command: string;
   format: string;
@@ -590,7 +591,24 @@ function parseScopes(buf: ArrayBuffer): ScopesData {
   return { parade, waveform };
 }
 
-export type AiHardware = { gpu: string | null; vram_mb: number | null; device: string };
+export type AiHardware = {
+  gpu: string | null;
+  vram_mb: number | null;
+  free_vram_mb?: number | null;
+  device: string;
+};
+export type AiVramCheck = {
+  model_id: string;
+  model_name: string;
+  uses_gpu: boolean;
+  gpu: string | null;
+  total_vram_mb: number | null;
+  available_vram_mb: number | null;
+  required_vram_mb: number;
+  required_with_buffer_mb: number;
+  warning: boolean;
+  message: string | null;
+};
 export type AiModel = {
   id: string;
   /** denoise | upscale | inpaint | generate | faces | faceswap | align */
@@ -631,6 +649,7 @@ export const api = {
   },
   /** This machine's GPU and the AI denoise models, the best one for it marked */
   aiModels: () => invoke<{ hardware: AiHardware; models: AiModel[] }>("ai_models"),
+  aiCheckVram: (model: string) => invoke<AiVramCheck>("ai_check_vram", { model }),
   aiDownload: (id: string) => invoke<void>("ai_download", { id }),
   aiRemove: (id: string) => invoke<void>("ai_remove", { id }),
   appInfo: () => invoke<AppInfo>("app_info"),
