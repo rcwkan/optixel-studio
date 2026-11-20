@@ -20,7 +20,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -324,31 +324,142 @@ pub struct AutoSettings {
 // Jobs
 // ---------------------------------------------------------------------------
 
+/// Shared cancellation state for a running job: sets the atomic flag and terminates any active ONNX Runtime call.
+pub struct JobControl {
+    cancelled: AtomicBool,
+    run_opts: Mutex<Option<Arc<ort::session::RunOptions>>>,
+}
+
+impl JobControl {
+    pub fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            run_opts: Mutex::new(None),
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        if let Some(opts) = self.run_opts.lock().unwrap().as_ref().cloned() {
+            let _ = opts.terminate();
+        }
+    }
+
+    pub fn attach_run_options(self: &Arc<Self>, opts: Arc<ort::session::RunOptions>) -> RunOptionsGuard {
+        *self.run_opts.lock().unwrap() = Some(opts.clone());
+        if self.is_cancelled() {
+            let _ = opts.terminate();
+        }
+        RunOptionsGuard {
+            control: Arc::clone(self),
+            opts,
+        }
+    }
+}
+
+pub struct RunOptionsGuard {
+    control: Arc<JobControl>,
+    opts: Arc<ort::session::RunOptions>,
+}
+
+impl Drop for RunOptionsGuard {
+    fn drop(&mut self) {
+        let mut guard = self.control.run_opts.lock().unwrap();
+        if guard.as_ref().is_some_and(|cur| Arc::ptr_eq(cur, &self.opts)) {
+            *guard = None;
+        }
+    }
+}
+
+thread_local! {
+    static ACTIVE_JOB: std::cell::RefCell<Option<Arc<JobControl>>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn current_job_control() -> Option<Arc<JobControl>> {
+    ACTIVE_JOB.with(|cell| cell.borrow().clone())
+}
+
+pub fn current_job_cancelled() -> bool {
+    current_job_control().is_some_and(|c| c.is_cancelled())
+}
+
+pub fn attach_run_options(opts: Arc<ort::session::RunOptions>) -> Option<RunOptionsGuard> {
+    current_job_control().map(|ctrl| ctrl.attach_run_options(opts))
+}
+
+pub(crate) fn check_not_cancelled() -> Result<(), String> {
+    if current_job_cancelled() {
+        Err("cancelled".into())
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn map_run_err(err: impl std::fmt::Display, prefix: &str) -> String {
+    if current_job_cancelled() {
+        "cancelled".into()
+    } else {
+        format!("{prefix}: {err}")
+    }
+}
+
+/// Binds an `ort::session::RunOptions` instance to the active thread's job control so `auto::cancel`
+/// terminates an in-flight `session.run_with_options(...)` immediately.
+pub(crate) struct CancellableRun {
+    opts: Arc<ort::session::RunOptions>,
+    _guard: Option<RunOptionsGuard>,
+}
+
+impl CancellableRun {
+    pub(crate) fn new() -> Result<Self, String> {
+        let opts = Arc::new(ort::session::RunOptions::new().map_err(|e| format!("AI run options: {e}"))?);
+        let guard = attach_run_options(opts.clone());
+        Ok(Self { opts, _guard: guard })
+    }
+
+    pub(crate) fn opts(&self) -> &ort::session::RunOptions {
+        &self.opts
+    }
+}
+
 /// A cancellable job; its progress reaches the UI as `job-progress` events.
 pub struct Job<'a> {
     core: &'a Core,
     pub id: String,
-    cancel: Arc<AtomicBool>,
+    control: Arc<JobControl>,
+    prev_control: Option<Arc<JobControl>>,
 }
 
 impl<'a> Job<'a> {
     pub fn start(core: &'a Core, id: &str) -> Job<'a> {
-        let cancel = Arc::new(AtomicBool::new(false));
-        core.jobs.lock().unwrap().insert(id.to_string(), cancel.clone());
-        Job { core, id: id.to_string(), cancel }
+        let control = Arc::new(JobControl::new());
+        core.jobs.lock().unwrap().insert(id.to_string(), control.clone());
+        let prev_control = ACTIVE_JOB.with(|cell| cell.borrow_mut().replace(control.clone()));
+        Job { core, id: id.to_string(), control, prev_control }
     }
     pub fn progress(&self, label: &str, done: usize, total: usize) {
+        if self.cancelled() {
+            return;
+        }
         self.core.emit("job-progress", json!({ "job": self.id, "label": label, "done": done, "total": total }));
     }
     pub fn cancelled(&self) -> bool {
-        self.cancel.load(Ordering::Relaxed)
+        self.control.is_cancelled()
     }
 }
 
 impl Drop for Job<'_> {
     fn drop(&mut self) {
+        let prev = self.prev_control.take();
+        ACTIVE_JOB.with(|cell| {
+            *cell.borrow_mut() = prev;
+        });
         let mut jobs = self.core.jobs.lock().unwrap();
-        if jobs.get(&self.id).is_some_and(|c| Arc::ptr_eq(c, &self.cancel)) {
+        if jobs.get(&self.id).is_some_and(|c| Arc::ptr_eq(c, &self.control)) {
             jobs.remove(&self.id);
         }
         drop(jobs);
@@ -358,7 +469,14 @@ impl Drop for Job<'_> {
 
 /// Ask a running job to stop; it keeps what it finished. False when no such job runs.
 pub fn cancel(core: &Core, id: &str) -> bool {
-    core.jobs.lock().unwrap().get(id).map(|c| c.store(true, Ordering::Relaxed)).is_some()
+    let ctrl = core.jobs.lock().unwrap().get(id).cloned();
+    match ctrl {
+        Some(c) => {
+            c.cancel();
+            true
+        }
+        None => false,
+    }
 }
 
 /// Decodes are memory-heavy (a 24 MP photo is ~300 MB in flight): analyse four at a time.
@@ -1441,8 +1559,11 @@ pub fn enhance(core: &Arc<Core>, ids: &[i64], s: &EnhanceSettings, job: &Job) ->
                     Ok(enhance::upscale(img, scale, s.sharpen))
                 } else {
                     aimodel::upscale_in(&core.dir(), &s.upscale_model, &img, scale, &|done, total| {
+                        if job.cancelled() {
+                            return false;
+                        }
                         job.progress("AI enlarging", done, total);
-                        !job.cancelled()
+                        true
                     })
                 }
             };
@@ -1463,8 +1584,11 @@ pub fn enhance(core: &Arc<Core>, ids: &[i64], s: &EnhanceSettings, job: &Job) ->
                     let hole = aimodel::hole_from_alpha(&alpha, proxy.w, proxy.h, img.w, img.h).ok_or("nothing is selected to remove")?;
                     job.progress("Removing the object", 0, 1);
                     aimodel::inpaint(&core.dir(), &s.ai_model, img, &hole, s.remove_grow.clamp(0.0, 40.0).round() as usize, &s.remove_prompt, &|done, total| {
+                        if job.cancelled() {
+                            return false;
+                        }
                         job.progress("Filling in", done, total);
-                        !job.cancelled()
+                        true
                     })?
                 } else {
                     img
@@ -1474,8 +1598,11 @@ pub fn enhance(core: &Arc<Core>, ids: &[i64], s: &EnhanceSettings, job: &Job) ->
                     // a RAW is denoised in its camera's own RGB, before the colour matrix mixes the channels' noise
                     let space = develop::is_raw(&file).then(|| fs::read(&file).ok().and_then(|b| crate::libraw::camera_space(&b))).flatten();
                     aimodel::denoise_in(&core.dir(), &s.ai_model, img, s.ai_strength, vram, space, &|done, total| {
+                        if job.cancelled() {
+                            return false;
+                        }
                         job.progress("AI denoising", done, total);
-                        !job.cancelled()
+                        true
                     })?
                 } else {
                     img
@@ -1769,6 +1896,25 @@ mod tests {
         assert!(run(&core, "hdr", &[shots[0]], &json!({}), &job).unwrap()["rows"][0]["error"].as_str().unwrap().contains("no bracket"));
         drop(job);
         assert!(core.jobs.lock().unwrap().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn job_control_terminates_attached_run_options() {
+        let dir = std::env::temp_dir().join(format!("ols-jobctl-test-{}", crate::new_token()));
+        let core = Core::open(dir.clone()).unwrap();
+        let job = Job::start(&core, "test-job");
+        assert!(!job.cancelled());
+        assert!(!current_job_cancelled());
+        let opts = Arc::new(ort::session::RunOptions::new().unwrap());
+        let guard = attach_run_options(opts.clone()).expect("active job control should attach");
+        assert!(cancel(&core, "test-job"));
+        assert!(job.cancelled());
+        assert!(current_job_cancelled());
+        drop(guard);
+        drop(job);
+        assert!(core.jobs.lock().unwrap().is_empty());
+        assert!(current_job_control().is_none());
         let _ = fs::remove_dir_all(&dir);
     }
 }

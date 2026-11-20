@@ -415,6 +415,7 @@ mod tests {
     /// temporary catalog, a click selects a person and "sky" the sky, as masks that adjust just those pixels
     /// when the photo renders, and the sky inverted adjusts everything else.
     #[test]
+    #[cfg(unix)]
     fn selections_edit_the_photo() {
         use crate::develop::{LocalAdjust, Opts};
         let (Some(models), Some(photo)) = (std::env::var_os("OPTIXEL_TEST_MODELS"), std::env::var_os("OPTIXEL_TEST_PHOTO")) else { return };

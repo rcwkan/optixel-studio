@@ -65,6 +65,10 @@ pub fn reset() {
     *MOEBIUS.lock().unwrap() = None;
 }
 
+pub fn is_loaded() -> bool {
+    MOEBIUS.lock().unwrap().is_some()
+}
+
 fn open_session(env: &ort::environment::Environment, path: &Path, key: &str, gpu: bool) -> Result<Session, String> {
     let fail = |e: String| format!("could not load {}: {e}", path.display());
     let try_open = |use_gpu: bool| -> Result<Session, String> {
@@ -141,6 +145,7 @@ pub fn fill(
     m_in: &[f32],
     tick: &dyn Fn(usize, usize) -> bool,
 ) -> Result<Vec<f32>, String> {
+    crate::auto::check_not_cancelled()?;
     crate::aimodel::clear_other_sessions();
     let mut guard = MOEBIUS.lock().unwrap();
     if guard.as_ref().is_none_or(|m| m.id() != id) {
@@ -148,7 +153,9 @@ pub fn fill(
         let model_dir = data.join("models").join(id);
         *guard = Some(Moebius::load(crate::sdfill::env()?, &model_dir, id, gpu)?);
     }
+    crate::auto::check_not_cancelled()?;
     let m = guard.as_mut().unwrap();
+    let cancel_run = crate::auto::CancellableRun::new()?;
 
     let area = SIZE * SIZE;
     let lat_area = LAT * LAT;
@@ -164,7 +171,10 @@ pub fn fill(
 
     // 2. VAE encode the masked image -> moments -> mean * SCALING_FACTOR
     let img_tensor = Tensor::from_array(([1usize, 3, SIZE, SIZE], planes)).map_err(|e| e.to_string())?;
-    let enc_out = m.venc.run(ort::inputs!["image" => img_tensor]).map_err(|e| format!("VAE encoder: {e}"))?;
+    let enc_out = m
+        .venc
+        .run_with_options(ort::inputs!["image" => img_tensor], cancel_run.opts())
+        .map_err(|e| crate::auto::map_run_err(e, "VAE encoder"))?;
     let (shape, moments) = enc_out["moments"].try_extract_tensor::<f32>().map_err(|e| e.to_string())?;
     if shape.len() != 4 || shape[1] < 4 || shape[2] as usize != LAT || shape[3] as usize != LAT {
         return Err(format!("unexpected VAE encoder output shape {shape:?}"));
@@ -223,8 +233,8 @@ pub fn fill(
 
         let unet_out = m
             .unet
-            .run(ort::inputs!["latent" => sample, "timesteps" => tstep, "input_ids" => ids])
-            .map_err(|e| format!("UNet: {e}"))?;
+            .run_with_options(ort::inputs!["latent" => sample, "timesteps" => tstep, "input_ids" => ids], cancel_run.opts())
+            .map_err(|e| crate::auto::map_run_err(e, "UNet"))?;
         let (noise_shape, noise) = unet_out["noise"].try_extract_tensor::<f32>().map_err(|e| e.to_string())?;
         if noise_shape.len() != 4 || noise_shape[0] != 2 || noise_shape[1] != 4 || noise_shape[2] as usize != LAT || noise_shape[3] as usize != LAT {
             return Err(format!("unexpected UNet noise output shape {noise_shape:?}"));
@@ -236,11 +246,15 @@ pub fn fill(
 
         ddim.step(&guided, t as usize, prev_t, &mut latents);
     }
+    crate::auto::check_not_cancelled()?;
 
     // 7. VAE decode latents / SCALING_FACTOR -> image in [-1, 1] -> [0, 1]
     let scaled: Vec<f32> = latents.iter().map(|&v| v / SCALING_FACTOR).collect();
     let dec_in = Tensor::from_array(([1usize, 4, LAT, LAT], scaled)).map_err(|e| e.to_string())?;
-    let dec_out = m.vdec.run(ort::inputs!["latent" => dec_in]).map_err(|e| format!("VAE decoder: {e}"))?;
+    let dec_out = m
+        .vdec
+        .run_with_options(ort::inputs!["latent" => dec_in], cancel_run.opts())
+        .map_err(|e| crate::auto::map_run_err(e, "VAE decoder"))?;
     let (img_shape, dec_img) = dec_out["image"].try_extract_tensor::<f32>().map_err(|e| e.to_string())?;
     if img_shape.len() != 4 || img_shape[1] != 3 || img_shape[2] as usize != SIZE || img_shape[3] as usize != SIZE {
         return Err(format!("unexpected VAE decoder output shape {img_shape:?}"));
@@ -252,5 +266,6 @@ pub fn fill(
             rgb_out[p * 3 + c] = ((dec_img[c * area + p] + 1.0) / 2.0).clamp(0.0, 1.0);
         }
     }
+    crate::auto::check_not_cancelled()?;
     Ok(rgb_out)
 }

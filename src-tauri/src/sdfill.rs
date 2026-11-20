@@ -189,19 +189,22 @@ impl Sd {
         &self.id
     }
 
-    fn embed(&mut self, prompt: &str) -> Result<Vec<f16>, String> {
-        let ids = self.tok.encode(prompt);
-        let t = Tensor::from_array(([1usize, CTX], ids)).map_err(|e| e.to_string())?;
-        let out = self.text.run(ort::inputs!["input_ids" => t]).map_err(|e| format!("text encoder: {e}"))?;
-        let (_, d) = out["last_hidden_state"].try_extract_tensor::<f16>().map_err(|e| e.to_string())?;
-        Ok(d.to_vec())
-    }
-
     /// Fill the hole of a 512 px picture. `rgb`: interleaved 0-1, `mask`: 1 = hole. Returns interleaved 0-1.
     /// `tick(step, steps)` returns false to cancel.
     pub fn fill(&mut self, rgb: &[f32], mask: &[f32], prompt: &str, negative: &str, steps: usize, seed: u64, tick: &dyn Fn(usize, usize) -> bool) -> Result<Vec<f32>, String> {
+        crate::auto::check_not_cancelled()?;
+        let cancel_run = crate::auto::CancellableRun::new()?;
         let area = SIZE * SIZE;
-        let (cond, uncond) = (self.embed(prompt)?, self.embed(negative)?);
+        let embed_with = |text_sess: &mut Session, s: &str| -> Result<Vec<f16>, String> {
+            let ids = self.tok.encode(s);
+            let t = Tensor::from_array(([1usize, CTX], ids)).map_err(|e| e.to_string())?;
+            let out = text_sess
+                .run_with_options(ort::inputs!["input_ids" => t], cancel_run.opts())
+                .map_err(|e| crate::auto::map_run_err(e, "text encoder"))?;
+            let (_, d) = out["last_hidden_state"].try_extract_tensor::<f16>().map_err(|e| e.to_string())?;
+            Ok(d.to_vec())
+        };
+        let (cond, uncond) = (embed_with(&mut self.text, prompt)?, embed_with(&mut self.text, negative)?);
         let ctx: Vec<f16> = uncond.iter().chain(&cond).copied().collect();
 
         // the picture with the hole blanked, as latents
@@ -213,7 +216,10 @@ impl Sd {
             }
         }
         let t = Tensor::from_array(([1usize, 3, SIZE, SIZE], planes)).map_err(|e| e.to_string())?;
-        let out = self.venc.run(ort::inputs!["sample" => t]).map_err(|e| format!("VAE encoder: {e}"))?;
+        let out = self
+            .venc
+            .run_with_options(ort::inputs!["sample" => t], cancel_run.opts())
+            .map_err(|e| crate::auto::map_run_err(e, "VAE encoder"))?;
         let (shape, lat) = out["latent_sample"].try_extract_tensor::<f16>().map_err(|e| e.to_string())?;
         if shape.len() != 4 || shape[1] != 4 || shape[2] as usize != LAT {
             return Err(format!("unexpected VAE encoder output {shape:?}"));
@@ -256,18 +262,22 @@ impl Sd {
             let hidden = Tensor::from_array(([2usize, CTX, 768], ctx.clone())).map_err(|e| e.to_string())?;
             let out = self
                 .unet
-                .run(ort::inputs!["sample" => sample, "timestep" => tstep, "encoder_hidden_states" => hidden])
-                .map_err(|e| format!("UNet: {e}"))?;
+                .run_with_options(ort::inputs!["sample" => sample, "timestep" => tstep, "encoder_hidden_states" => hidden], cancel_run.opts())
+                .map_err(|e| crate::auto::map_run_err(e, "UNet"))?;
             let (_, eps) = out["out_sample"].try_extract_tensor::<f16>().map_err(|e| e.to_string())?;
             let (un, co) = eps.split_at(4 * lat_area);
             let guided: Vec<f32> = un.iter().zip(co).map(|(u, c)| u.to_f32() + GUIDANCE * (c.to_f32() - u.to_f32())).collect();
             drop(out);
             sched.step(&guided, t, &mut latents);
         }
+        crate::auto::check_not_cancelled()?;
 
         let dec: Vec<f16> = latents.iter().map(|&v| f16::from_f32(v / SCALE)).collect();
         let t = Tensor::from_array(([1usize, 4, LAT, LAT], dec)).map_err(|e| e.to_string())?;
-        let out = self.vdec.run(ort::inputs!["latent_sample" => t]).map_err(|e| format!("VAE decoder: {e}"))?;
+        let out = self
+            .vdec
+            .run_with_options(ort::inputs!["latent_sample" => t], cancel_run.opts())
+            .map_err(|e| crate::auto::map_run_err(e, "VAE decoder"))?;
         let (_, img) = out["sample"].try_extract_tensor::<f16>().map_err(|e| e.to_string())?;
         let mut rgb_out = vec![0f32; area * 3];
         for i in 0..area {
@@ -275,6 +285,7 @@ impl Sd {
                 rgb_out[i * 3 + c] = (img[c * area + i].to_f32() / 2.0 + 0.5).clamp(0.0, 1.0);
             }
         }
+        crate::auto::check_not_cancelled()?;
         Ok(rgb_out)
     }
 }
