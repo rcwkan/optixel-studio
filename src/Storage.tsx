@@ -561,8 +561,16 @@ type Kind = "folder" | "drive" | "photos" | "immich" | "google" | "apple" | "ama
 type Draft = { kind: Kind; path: string; drive: string; album: string; account: string; cloudPath: string };
 const EMPTY: Draft = { kind: "folder", path: "", drive: "", album: "favorites", account: "", cloudPath: "" };
 
+export type DuplicateJobStore = {
+  job: string;
+  result: DuplicateResult | null;
+  error: string;
+  run: (from: Place, to: Place, options: DuplicateOptions & { cull?: boolean }) => Promise<void>;
+  setError: (msg: string) => void;
+};
+
 /** Copy photos from one place to another: folders, network drives, catalog photos, Immich, Google Photos, cloud storage. */
-export function Duplicate({ settings, selected, jobs }: { settings: Settings; selected: number[]; jobs: Record<string, JobProgress> }) {
+export function Duplicate({ settings, selected, jobs, dupJobs }: { settings: Settings; selected: number[]; jobs: Record<string, JobProgress>; dupJobs: DuplicateJobStore }) {
   const [from, setFrom] = useState<Draft>(EMPTY);
   const [to, setTo] = useState<Draft>(EMPTY);
   const [o, setO] = useState<DuplicateOptions & { cull: boolean }>({
@@ -577,9 +585,6 @@ export function Duplicate({ settings, selected, jobs }: { settings: Settings; se
     cull: settings.auto.on_import.enabled && settings.auto.on_import.duplicates,
   });
   const [albums, setAlbums] = useState<ImmichAlbum[]>([]);
-  const [job, setJob] = useState("");
-  const [result, setResult] = useState<DuplicateResult | null>(null);
-  const [error, setError] = useState("");
   const [browse, setBrowse] = useState<"from" | "to" | null>(null);
   useEffect(() => {
     if (settings.immich_url) api.immichAlbums().then(setAlbums, () => setAlbums([]));
@@ -611,19 +616,23 @@ export function Duplicate({ settings, selected, jobs }: { settings: Settings; se
   const complete = (d: Draft) =>
     d.kind === "folder" ? !!d.path.trim() : d.kind === "drive" ? !!d.drive : d.kind === "cloud" ? !!d.account : d.kind === "photos" ? selected.length > 0 : true;
   const toFolder = to.kind === "folder" || to.kind === "drive";
+  const activeJob = dupJobs.job || Object.values(jobs).find((j) => j.job.startsWith("duplicate-"))?.job || "";
   const run = async () => {
-    const id = `duplicate-${Date.now()}`;
-    setJob(id);
-    setResult(null);
-    setError("");
+    dupJobs.setError("");
+    let fromPlace: Place;
+    let toPlace: Place;
     try {
-      setResult(await api.duplicate(await place(from), await place(to), o, id));
+      fromPlace = await place(from);
+      toPlace = await place(to);
     } catch (e) {
-      setError(String(e));
+      dupJobs.setError(String(e));
+      return;
     }
-    setJob("");
+    await dupJobs.run(fromPlace, toPlace, o);
   };
-  const progress = job ? jobs[job] : undefined;
+  const progress = activeJob ? jobs[activeJob] : undefined;
+  const result = dupJobs.result;
+  const error = dupJobs.error;
   const check = (k: keyof DuplicateOptions, label: string, detail?: string, disabled?: boolean) => (
     <label className={`flex items-start gap-2 py-0.5 ${disabled ? "opacity-40" : ""}`}>
       <input type="checkbox" className="mt-0.5" disabled={disabled} checked={!!o[k]} onChange={(e) => setO({ ...o, [k]: e.target.checked })} />
@@ -764,10 +773,10 @@ export function Duplicate({ settings, selected, jobs }: { settings: Settings; se
         </div>
       </section>
       <div className="flex max-w-4xl items-center gap-3">
-        <Btn active className="px-4 py-1.5 text-[12px] font-medium" disabled={!!job || !complete(from) || !complete(to)} onClick={run}>
-          {job ? "Copying…" : "Duplicate"}
+        <Btn active className="px-4 py-1.5 text-[12px] font-medium" disabled={!!activeJob || !complete(from) || !complete(to)} onClick={run}>
+          {activeJob ? "Copying…" : "Duplicate"}
         </Btn>
-        {job && (
+        {activeJob && (
           <>
             <div className="min-w-0 flex-1">
               <div className="mb-0.5 flex justify-between text-[10px] text-neutral-400">
@@ -786,7 +795,7 @@ export function Duplicate({ settings, selected, jobs }: { settings: Settings; se
                 )}
               </div>
             </div>
-            <Btn onClick={() => api.cancelJob(job)} title="Stop after the current file; what is copied stays">
+            <Btn onClick={() => api.cancelJob(activeJob)} title="Stop after the current file; what is copied stays">
               Cancel
             </Btn>
           </>

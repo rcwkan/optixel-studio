@@ -60,7 +60,7 @@ export const FUNCS: { id: AutoFunction; title: string; short: string; icon: stri
     icon: "M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z",
     verb: "Cull",
     blurb:
-      "Scores each photo's sharpness (on its main subject), exposure and noise, groups bursts and picks the best of each, rejects blurred or badly exposed photos, rates the rest 1–5 stars and adds catalog keywords.",
+      "Scores each photo's sharpness (on its main subject), exposure and noise, groups bursts and picks the best of each, rejects blurred or badly exposed photos, rates the rest 1–5 stars and adds catalog keywords; with local AI quality and aesthetics models (Settings → AI models) it also scores photos the way people judge them.",
     ai: on("ai_keywords"),
     fields: [
       { kind: "check", k: "reject_blurry", label: "Reject blurred photos", basic: true },
@@ -78,6 +78,12 @@ export const FUNCS: { id: AutoFunction; title: string; short: string; icon: stri
       { kind: "slider", k: "burst_seconds", label: "Taken within", min: 0.5, max: 10, step: 0.5, digits: 1, unit: " s" },
       { kind: "slider", k: "similarity", label: "Looking alike from", min: 0, max: 100, unit: "%" },
       { kind: "check", k: "reject_similar", label: "Reject the rest of a burst", hint: "Off: they get fewer stars than the best" },
+      { kind: "heading", label: "AI quality" },
+      { kind: "check", k: "ai_quality", label: "Score with the AI quality models", hint: "Local ONNX quality and aesthetics models (Lumina v2, LAION Aesthetic v2, or TOPIQ); download them in Settings → AI models → Culling" },
+      { kind: "slider", k: "ai_weight", label: "AI share of the score", min: 0, max: 100, unit: "%", when: on("ai_quality") },
+      { kind: "check", k: "reject_low_quality", label: "Reject low-quality photos (AI)", when: on("ai_quality") },
+      { kind: "slider", k: "quality_threshold", label: "Low quality below", min: 0, max: 100, when: (s) => !!s.ai_quality && !!s.reject_low_quality, hint: "AI technical quality 0–100: sharp, clean photos score about 55–75, blurred ones under 40" },
+      { kind: "check", k: "reject_blinks", label: "Reject closed eyes", hint: "Needs the face scan and the 2DFAN4 eye landmark model (Settings → AI models → People)" },
       { kind: "heading", label: "Catalog" },
       { kind: "check", k: "labels", label: "Colour labels", hint: "Green picks, yellow borderline, red rejects" },
       { kind: "check", k: "ai_keywords", label: "Subject and scene keywords from the AI provider", hint: "One request per photo" },
@@ -458,7 +464,7 @@ function extraIds(r: AutoResult): number[] {
 }
 
 /** The photos a result is about, for Show in Library. */
-function resultIds(r: AutoResult): number[] {
+export function resultIds(r: AutoResult): number[] {
   const rows = r.rows as Rec[];
   switch (r.function) {
     case "blur":
@@ -473,12 +479,22 @@ function resultIds(r: AutoResult): number[] {
   }
 }
 
+export type AutoJobsStore = {
+  running: Partial<Record<AutoFunction, string>>;
+  results: Partial<Record<AutoFunction, AutoResult>>;
+  errors: Partial<Record<AutoFunction, string>>;
+  photos: Record<number, Photo>;
+  run: (fn: AutoFunction, ids: number[], settings: object) => Promise<AutoResult | null>;
+  setError: (fn: AutoFunction, msg?: string) => void;
+};
+
 export type AutoViewProps = {
   settings: Settings | null;
   setSettings: (s: Settings) => void;
   selected: number[];
   view: Photo[];
   jobs: Record<string, JobProgress>;
+  autoJobs: AutoJobsStore;
   onShow: (ids: number[], label: string) => void;
   onAiSettings: () => void;
   onStorage: () => void;
@@ -487,7 +503,7 @@ export type AutoViewProps = {
 
 /** One auto function in the Library's right panel, next to the grid: its settings (the advanced ones folded
  *  away), run on the selected photos, the photos in view or the whole catalog, and what the last run found.
- *  The Library keeps it mounted while hidden, so runs and results survive switching functions. */
+ *  Running jobs and results live in App.tsx so switching screens or functions preserves live progress. */
 export function AutoView(p: AutoViewProps) {
   const fn = p.fn;
   const [scope, setScope] = useState<"selected" | "view" | "all">(p.selected.length ? "selected" : "view");
@@ -497,10 +513,6 @@ export function AutoView(p: AutoViewProps) {
     }
   }, [p.selected.length, scope]);
   const [total, setTotal] = useState<number | null>(null);
-  const [running, setRunning] = useState<Partial<Record<AutoFunction, string>>>({});
-  const [results, setResults] = useState<Partial<Record<AutoFunction, AutoResult>>>({});
-  const [errors, setErrors] = useState<Partial<Record<AutoFunction, string>>>({});
-  const [photos, setPhotos] = useState<Record<number, Photo>>({});
   const [defaults, setDefaults] = useState<AutoSettings | null>(null);
   const [advanced, setAdvanced] = useState(false);
   const [filter, setFilter] = useState("all");
@@ -508,7 +520,7 @@ export function AutoView(p: AutoViewProps) {
   const latest = useRef(p.settings);
   latest.current = p.settings;
   useEffect(() => void api.autoDefaults().then(setDefaults), []);
-  useEffect(() => void api.query({}).then((ps) => setTotal(ps.length)), [results]);
+  useEffect(() => void api.query({}).then((ps) => setTotal(ps.length)), [p.autoJobs.results]);
   useEffect(() => setFilter(fn === "blur" ? "found" : "all"), [fn]);
   const resultRef = useRef<HTMLDivElement>(null);
   if (!p.settings) return null;
@@ -535,9 +547,9 @@ export function AutoView(p: AutoViewProps) {
 
   const run = async (f: AutoFunction) => {
     const settings = latest.current!.auto[f];
-    setErrors((e) => ({ ...e, [f]: undefined }));
+    p.autoJobs.setError(f, undefined);
     const ids = scope === "selected" ? p.selected : scope === "view" ? p.view.map((x) => x.id) : (await api.query({})).map((x) => x.id);
-    if (!ids.length) return setErrors((e) => ({ ...e, [f]: scope === "selected" ? "Select photos in the Library first." : "There are no photos here." }));
+    if (!ids.length) return p.autoJobs.setError(f, scope === "selected" ? "Select photos in the Library first." : "There are no photos here.");
     if (f === "enhance") {
       const enh = settings as AutoSettings["enhance"];
       const modelIds: string[] = [];
@@ -547,25 +559,19 @@ export function AutoView(p: AutoViewProps) {
         if (!(await confirmVram(mid))) return;
       }
     }
-    const job = `${f}-${Date.now()}`;
-    setRunning((r) => ({ ...r, [f]: job }));
-    try {
-      const r = await api.autoRun(f, ids, settings, job);
-      setResults((x) => ({ ...x, [f]: r }));
+    const r = await p.autoJobs.run(f, ids, settings);
+    if (r) {
       setFilter(f === "blur" ? "found" : "all");
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 50);
-      const need = [...new Set([...resultIds(r), ...(r.rows as Rec[]).map((x) => x.id as number)])].filter((id) => id != null);
-      const got = await api.query({ ids: need });
-      setPhotos((cur) => ({ ...cur, ...Object.fromEntries(got.map((ph) => [ph.id, ph])) }));
-    } catch (e) {
-      setErrors((x) => ({ ...x, [f]: String(e) }));
-    } finally {
-      setRunning(({ [f]: _, ...rest }) => rest);
     }
   };
-  const job = running[fn];
+  const job =
+    p.autoJobs.running[fn] ??
+    Object.values(p.jobs).find((j) => j.job.startsWith(`${fn}-`) || (fn === "cull" && j.job.startsWith("on-import-")))?.job;
   const progress = job ? p.jobs[job] : undefined;
-  const result = results[fn];
+  const result = p.autoJobs.results[fn];
+  const error = p.autoJobs.errors[fn];
+  const photos = p.autoJobs.photos;
   const ai = def.ai?.(s);
 
   return (
@@ -653,7 +659,7 @@ export function AutoView(p: AutoViewProps) {
           </Btn>
         </div>
       )}
-      {errors[fn] && <p className="break-words text-red-400">{errors[fn]}</p>}
+      {error && <p className="break-words text-red-400">{error}</p>}
 
       <div ref={resultRef}>{result && <Results r={result} photos={photos} filter={filter} setFilter={setFilter} onShow={p.onShow} title={def.title} />}</div>
 
@@ -843,6 +849,8 @@ function Detail({ r, x }: { r: AutoResult; x: Rec }) {
           <span>
             quality {String(x.quality)} · sharp {String(x.subject_sharpness)} · exposure {String(x.exposure)}
           </span>
+          {x.ai_quality != null && <span>AI quality {String(x.ai_quality)}</span>}
+          {x.ai_aesthetic != null && <span>aesthetic {String(x.ai_aesthetic)}</span>}
           {x.burst != null && <span>burst of {String(x.burst)}{x.best ? " (best)" : ""}</span>}
           {x.kept === true && <span className="text-amber-300">kept as you set it</span>}
         </span>

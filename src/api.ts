@@ -254,6 +254,8 @@ export type Settings = {
   /** Segment Anything: SAM 2.1 for click selection, SAM 3 for select by name / Auto masks; empty: best installed */
   ai_select_model?: string;
   ai_concept_model?: string;
+  ai_quality_model?: string;
+  ai_aesthetic_model?: string;
   mcp_port: number;
   mcp_token: string;
   providers: Provider[];
@@ -339,6 +341,10 @@ export type CullSettings = {
   keywords: boolean;
   ai_keywords: boolean;
   keep_manual: boolean;
+  ai_quality?: boolean;
+  ai_weight?: number;
+  reject_low_quality?: boolean;
+  quality_threshold?: number;
 };
 export type EditSettings = {
   profile: string;
@@ -621,6 +627,7 @@ export type AiModel = {
   installed: boolean;
   fits: boolean;
   recommended: boolean;
+  non_commercial?: boolean;
   note: string;
 };
 

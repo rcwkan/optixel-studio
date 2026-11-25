@@ -1,12 +1,15 @@
 import { listen } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Log } from "./Agent";
-import { api, AppInfo, AutoFunction, CloudFolder, Culling, Develop as Dev, Filter, FolderLoading, forgetRoot, getFirstFolder, loadLastFolder, loadRoots, rememberLastFolder, rememberRoot, JobProgress, LABELS, NetworkDrive, Photo, setThumbsDir, Settings, Source, UpdateInfo } from "./api";
+import { api, AppInfo, AutoFunction, AutoResult, CloudFolder, Culling, Develop as Dev, DuplicateOptions, DuplicateResult, Filter, FolderLoading, forgetRoot, getFirstFolder, loadLastFolder, loadRoots, rememberLastFolder, rememberRoot, JobProgress, LABELS, NetworkDrive, Photo, Place, setThumbsDir, Settings, Source, UpdateInfo } from "./api";
+import { AutoJobsStore, FUNCS, resultIds } from "./AutoView";
 import { AiTaskState, Develop } from "./Develop";
 import { ExportDialog, Library, RemoteDialog, SelectMods } from "./Library";
 import { CompareModal } from "./CompareModal";
 import { SettingsTab, SettingsView } from "./Settings";
+import { DuplicateJobStore } from "./Storage";
+import { ModelDownloadStore } from "./AiModels";
 import { UpdateModal } from "./UpdateModal";
 import { People } from "./People";
 import { applyTheme, getStoredTheme } from "./theme";
@@ -49,6 +52,18 @@ export default function App() {
   const loadingPage = useRef(false);
   const [jobs, setJobs] = useState<Record<string, JobProgress>>({});
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("appearance");
+  const [openAutoRev, setOpenAutoRev] = useState(0);
+  const [autoRunning, setAutoRunning] = useState<Partial<Record<AutoFunction, string>>>({});
+  const [autoResults, setAutoResults] = useState<Partial<Record<AutoFunction, AutoResult>>>({});
+  const [autoErrors, setAutoErrors] = useState<Partial<Record<AutoFunction, string>>>({});
+  const [autoPhotos, setAutoPhotos] = useState<Record<number, Photo>>({});
+  const [dupJob, setDupJob] = useState("");
+  const [dupResult, setDupResult] = useState<DuplicateResult | null>(null);
+  const [dupError, setDupError] = useState("");
+  const [modelDl, setModelDl] = useState<{ id: string; done: number; total: number } | null>(null);
+  const [modelDlError, setModelDlError] = useState<string | null>(null);
+  const navRef = useRef({ module, libraryAutoFn, settingsTab });
+  navRef.current = { module, libraryAutoFn, settingsTab };
   const [loadingFolder, setLoadingFolder] = useState<FolderLoading | null>(null);
   const [binCount, setBinCount] = useState<number>(0);
   const [compareOpen, setCompareOpen] = useState(false);
@@ -251,6 +266,7 @@ export default function App() {
           return e.payload.finished ? rest : { ...rest, [e.payload.job]: e.payload };
         }),
       ),
+      listen<{ id: string; done: number; total: number }>("ai-model-progress", (e) => setModelDl(e.payload)),
       listen<{ source: string; message: string }>("agent-log", (e) => setLogs((l) => [...l.slice(-499), { t: new Date().toLocaleTimeString(), ...e.payload }])),
     ];
     return () => {
@@ -285,9 +301,165 @@ export default function App() {
   const busyAiIds = Object.entries(aiTasks)
     .filter(([, t]) => t.busy)
     .map(([id]) => Number(id));
-  // Auto Catalog & Culling of new photos runs in the background
-  const culling = Object.values(jobs).find((j) => j.job.startsWith("on-import-"));
-  const background = culling ? `Culling new photos${culling.total ? ` ${culling.done} / ${culling.total}` : "…"}` : "";
+  const openAutoPanel = useCallback((fn: AutoFunction) => {
+    setLibraryAutoFn(fn);
+    setOpenAutoRev((n) => n + 1);
+    setModule("library");
+  }, []);
+
+  const runAuto = useCallback(async (fn: AutoFunction, ids: number[], fnSettings: object): Promise<AutoResult | null> => {
+    const job = `${fn}-${Date.now()}`;
+    setAutoRunning((r) => ({ ...r, [fn]: job }));
+    setAutoErrors((e) => ({ ...e, [fn]: undefined }));
+    try {
+      const r = await api.autoRun(fn, ids, fnSettings, job);
+      setAutoResults((x) => ({ ...x, [fn]: r }));
+      const need = [...new Set([...resultIds(r), ...(r.rows as Record<string, unknown>[]).map((x) => x.id as number)])].filter((id) => id != null);
+      if (need.length) {
+        const got = await api.query({ ids: need });
+        setAutoPhotos((cur) => ({ ...cur, ...Object.fromEntries(got.map((ph) => [ph.id, ph])) }));
+      }
+      const curNav = navRef.current;
+      if (curNav.module !== "library" || curNav.libraryAutoFn !== fn) {
+        const title = FUNCS.find((f) => f.id === fn)?.title ?? fn;
+        setStatus(`${title} finished`);
+        setTimeout(() => setStatus((s) => (s === `${title} finished` ? "" : s)), 4000);
+      }
+      return r;
+    } catch (e) {
+      setAutoErrors((x) => ({ ...x, [fn]: String(e) }));
+      return null;
+    } finally {
+      setAutoRunning(({ [fn]: _, ...rest }) => rest);
+    }
+  }, []);
+
+  const autoJobs = useMemo<AutoJobsStore>(
+    () => ({
+      running: autoRunning,
+      results: autoResults,
+      errors: autoErrors,
+      photos: autoPhotos,
+      run: runAuto,
+      setError: (fn, msg) => setAutoErrors((e) => ({ ...e, [fn]: msg })),
+    }),
+    [autoRunning, autoResults, autoErrors, autoPhotos, runAuto],
+  );
+
+  const runDuplicate = useCallback(async (from: Place, to: Place, options: DuplicateOptions & { cull?: boolean }) => {
+    const id = `duplicate-${Date.now()}`;
+    setDupJob(id);
+    setDupResult(null);
+    setDupError("");
+    try {
+      const r = await api.duplicate(from, to, options, id);
+      setDupResult(r);
+      const curNav = navRef.current;
+      if (curNav.module !== "settings" || curNav.settingsTab !== "duplicate") {
+        setStatus("Duplicate copy finished");
+        setTimeout(() => setStatus((s) => (s === "Duplicate copy finished" ? "" : s)), 4000);
+      }
+    } catch (e) {
+      setDupError(String(e));
+    } finally {
+      setDupJob("");
+    }
+  }, []);
+
+  const dupJobs = useMemo<DuplicateJobStore>(
+    () => ({
+      job: dupJob,
+      result: dupResult,
+      error: dupError,
+      run: runDuplicate,
+      setError: setDupError,
+    }),
+    [dupJob, dupResult, dupError, runDuplicate],
+  );
+
+  const downloadModel = useCallback(async (id: string) => {
+    setModelDlError(null);
+    setModelDl({ id, done: 0, total: 1 });
+    try {
+      await api.aiDownload(id);
+    } catch (e) {
+      setModelDlError(String(e));
+    } finally {
+      setModelDl(null);
+    }
+  }, []);
+
+  const modelDlStore = useMemo<ModelDownloadStore>(
+    () => ({
+      active: modelDl,
+      error: modelDlError,
+      download: downloadModel,
+    }),
+    [modelDl, modelDlError, downloadModel],
+  );
+
+  const batchJobs = useMemo(() => {
+    const items: { key: string; jobId?: string; label: string; detail: string; done: number; total: number; isBytes?: boolean; onOpen: () => void }[] = [];
+    const seen = new Set<string>();
+    for (const def of FUNCS) {
+      const jid =
+        autoRunning[def.id] ??
+        Object.values(jobs).find((j) => j.job.startsWith(`${def.id}-`) || (def.id === "cull" && j.job.startsWith("on-import-")))?.job;
+      if (jid) {
+        seen.add(jid);
+        const pr = jobs[jid];
+        items.push({
+          key: `auto-${def.id}`,
+          jobId: jid,
+          label: jid.startsWith("on-import-") ? "Auto Cull" : def.short,
+          detail: pr?.label ?? "Starting",
+          done: pr?.done ?? 0,
+          total: pr?.total ?? 0,
+          onOpen: () => openAutoPanel(def.id),
+        });
+      }
+    }
+    const scan = jobs["faces-scan"];
+    if (scan) {
+      seen.add(scan.job);
+      items.push({
+        key: "faces-scan",
+        jobId: scan.job,
+        label: "People",
+        detail: scan.label ?? "Scanning faces",
+        done: scan.done,
+        total: scan.total,
+        onOpen: () => setModule("people"),
+      });
+    }
+    const activeDupId = dupJob || Object.values(jobs).find((j) => j.job.startsWith("duplicate-"))?.job;
+    if (activeDupId) {
+      seen.add(activeDupId);
+      const pr = jobs[activeDupId];
+      items.push({
+        key: "duplicate",
+        jobId: activeDupId,
+        label: "Duplicate",
+        detail: pr?.label ?? "Copying",
+        done: pr?.done ?? 0,
+        total: pr?.total ?? 0,
+        onOpen: () => (setSettingsTab("duplicate"), setModule("settings")),
+      });
+    }
+    if (modelDl) {
+      items.push({
+        key: `model-${modelDl.id}`,
+        label: "AI model",
+        detail: "Downloading",
+        done: modelDl.done,
+        total: modelDl.total,
+        isBytes: true,
+        onOpen: () => (setSettingsTab("ai"), setModule("settings")),
+      });
+    }
+    return items;
+  }, [autoRunning, jobs, dupJob, modelDl, openAutoPanel]);
+  const primaryBatch = batchJobs[0] ?? null;
   const targets = () => (selected.length ? selected : activeId != null ? [activeId] : []);
 
   const addWorkingImages = useCallback(
@@ -907,8 +1079,57 @@ export default function App() {
             <span>✦ AI working on {busyAiIds.length} {busyAiIds.length === 1 ? "photo" : "photos"} in Develop…</span>
           </button>
         )}
+        {primaryBatch && (
+          <div
+            className="flex items-center gap-2 rounded-full border px-2.5 py-0.5 text-[11px] font-medium"
+            style={{
+              backgroundColor: "var(--tint-amber-bg)",
+              color: "var(--tint-amber-text)",
+              borderColor: "var(--tint-amber-border)",
+            }}
+          >
+            <button
+              type="button"
+              onClick={primaryBatch.onOpen}
+              className="flex items-center gap-1.5 cursor-pointer hover:opacity-85"
+              title="Click to return to this background job"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" />
+              <span>
+                {primaryBatch.label} · {primaryBatch.detail}
+                {primaryBatch.total > 0
+                  ? primaryBatch.isBytes
+                    ? ` ${Math.min(100, Math.max(0, Math.round((primaryBatch.done / primaryBatch.total) * 100)))}%`
+                    : ` ${primaryBatch.done} / ${primaryBatch.total}`
+                  : "…"}
+                {batchJobs.length > 1 ? ` (+${batchJobs.length - 1})` : ""}
+              </span>
+              {primaryBatch.total > 0 && (
+                <span className="inline-block h-1 w-12 overflow-hidden rounded-full bg-black/20">
+                  <span
+                    className="block h-full bg-current transition-all duration-150"
+                    style={{ width: `${Math.min(100, Math.max(4, (primaryBatch.done / primaryBatch.total) * 100))}%` }}
+                  />
+                </span>
+              )}
+            </button>
+            {primaryBatch.jobId && (
+              <button
+                type="button"
+                className="text-[11px] opacity-75 hover:opacity-100 cursor-pointer"
+                title="Cancel this background job; what is done stays"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void api.cancelJob(primaryBatch.jobId!);
+                }}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        )}
         <span className="ml-auto truncate text-[11px] text-neutral-400 flex items-center gap-2" title={status}>
-          {status || background}
+          {status}
           {regenProgress && regenProgress.total > 0 && (
             <span className="flex items-center gap-1.5 font-mono text-[10px] text-sky-400">
               <span className="inline-block w-16 h-1.5 rounded-full bg-neutral-800 overflow-hidden">
@@ -921,11 +1142,6 @@ export default function App() {
             </span>
           )}
         </span>
-        {!status && culling && (
-          <button className="text-[11px] text-neutral-500 hover:text-white" title="Stop culling the new photos; what is done stays" onClick={() => api.cancelJob(culling.job)}>
-            ✕
-          </button>
-        )}
         {updateInfo?.has_update && (
           <button
             type="button"
@@ -1012,7 +1228,9 @@ export default function App() {
           onOpenCompare={() => setCompareOpen(true)}
           autoFn={libraryAutoFn}
           onSelectAutoFn={setLibraryAutoFn}
+          openAutoRev={openAutoRev}
           jobs={jobs}
+          autoJobs={autoJobs}
           onAiSettings={() => {
             setSettingsTab("agent");
             setModule("settings");
@@ -1064,6 +1282,8 @@ export default function App() {
           setSettings={setSettings}
           selected={selected}
           jobs={jobs}
+          dupJobs={dupJobs}
+          modelDl={modelDlStore}
           onConnect={setRemote}
           onAuto={() => {
             setModule("library");

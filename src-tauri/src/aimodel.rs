@@ -45,6 +45,8 @@ struct Spec {
     gpu: bool,
     /// the single file is a zip: unpack it next to itself once it is verified
     unzip: bool,
+    /// true when the weights/model license forbids commercial use (highlighted in Settings → AI models)
+    non_commercial: bool,
 }
 
 const MODELS: &[Spec] = &[
@@ -65,6 +67,7 @@ const MODELS: &[Spec] = &[
         dims: Some(["batch", "height", "width"]),
         gpu: true,
         unzip: false,
+        non_commercial: false,
     },
     Spec {
         id: "scunet-real-gan",
@@ -83,6 +86,7 @@ const MODELS: &[Spec] = &[
         dims: Some(["batch", "height", "width"]),
         gpu: true,
         unzip: false,
+        non_commercial: false,
     },
     Spec {
         id: "nafnet-sidd-w32-fp16",
@@ -98,6 +102,7 @@ const MODELS: &[Spec] = &[
         dims: Some(["", "h", "w"]),
         gpu: true,
         unzip: false,
+        non_commercial: false,
     },
     Spec {
         id: "realesrgan-x4plus",
@@ -113,6 +118,7 @@ const MODELS: &[Spec] = &[
         dims: Some(["", "height", "width"]),
         gpu: true,
         unzip: false,
+        non_commercial: false,
     },
     Spec {
         id: "realesrgan-x4plus-anime-6b",
@@ -128,6 +134,7 @@ const MODELS: &[Spec] = &[
         dims: Some(["", "height", "width"]),
         gpu: true,
         unzip: false,
+        non_commercial: false,
     },
     Spec {
         id: "lama-big",
@@ -143,6 +150,7 @@ const MODELS: &[Spec] = &[
         dims: None,
         gpu: false,
         unzip: false,
+        non_commercial: false,
     },
     Spec {
         id: "moebius",
@@ -162,6 +170,7 @@ const MODELS: &[Spec] = &[
         dims: None,
         gpu: true,
         unzip: false,
+        non_commercial: false,
     },
     Spec {
         id: "sd15-inpaint",
@@ -184,6 +193,7 @@ const MODELS: &[Spec] = &[
         dims: None,
         gpu: true,
         unzip: false,
+        non_commercial: false,
     },
     Spec {
         id: "hyperswap-1a",
@@ -203,6 +213,7 @@ const MODELS: &[Spec] = &[
         dims: None,
         gpu: false,
         unzip: false,
+        non_commercial: true,
     },
     Spec {
         id: "arcface-faces",
@@ -221,6 +232,7 @@ const MODELS: &[Spec] = &[
         dims: None,
         gpu: false,
         unzip: false,
+        non_commercial: true,
     },
     Spec {
         id: "face-landmarks-2dfan4",
@@ -236,6 +248,7 @@ const MODELS: &[Spec] = &[
         dims: None,
         gpu: false,
         unzip: false,
+        non_commercial: true,
     },
     Spec {
         id: "sam2.1-hiera-tiny",
@@ -256,6 +269,7 @@ const MODELS: &[Spec] = &[
         dims: None,
         gpu: true,
         unzip: false,
+        non_commercial: false,
     },
     Spec {
         id: "sam2.1-hiera-small",
@@ -276,6 +290,7 @@ const MODELS: &[Spec] = &[
         dims: None,
         gpu: true,
         unzip: false,
+        non_commercial: false,
     },
     Spec {
         id: "sam3-fp16",
@@ -297,6 +312,7 @@ const MODELS: &[Spec] = &[
         dims: None,
         gpu: false,
         unzip: false,
+        non_commercial: false,
     },
     Spec {
         id: "sam3-tiny",
@@ -318,6 +334,7 @@ const MODELS: &[Spec] = &[
         dims: None,
         gpu: false,
         unzip: false,
+        non_commercial: false,
     },
     Spec {
         id: "perspective-fields-gsv",
@@ -335,6 +352,7 @@ const MODELS: &[Spec] = &[
         dims: None,
         gpu: true,
         unzip: false,
+        non_commercial: false,
     },
     Spec {
         id: "perspective-fields-edina",
@@ -352,6 +370,80 @@ const MODELS: &[Spec] = &[
         dims: None,
         gpu: true,
         unzip: false,
+        non_commercial: false,
+    },
+    Spec {
+        id: "lumina-v2-int8",
+        kind: "quality",
+        name: "Lumina v2 · Technical quality (culling)",
+        blurb: "Commercial-use MIT model (CLIP ConvNeXt-Base, INT8). Predicts human quality scores (KonIQ-10k / SPAQ / KADID-10k) at native aspect ratio without squashing. Auto culling blends it into ratings, picks the best of each burst, and can reject low-quality photos.",
+        license: "MIT (Lumina v2, sawabedarain; ConvNeXt-Base CLIP backbone Apache-2.0): commercial use allowed",
+        repo: "sawabedarain/lumina-iqa",
+        files: &[
+            ("lumina_v2.int8.onnx", 117_862_450, "45186059d4ac93cd381d2284aa303cb8917bc717628c879ea249c893aa53ff7f"),
+        ],
+        min_vram_mb: 0,
+        rank: 30,
+        multiple: 1,
+        dims: None,
+        gpu: false,
+        unzip: false,
+        non_commercial: false,
+    },
+    Spec {
+        id: "topiq-nr-koniq",
+        kind: "quality",
+        name: "TOPIQ · Technical quality (culling)",
+        blurb: "Scores focus, blur, noise, exposure and compression together, the way people rate photos (trained on KonIQ-10k, 10,000 photos rated by people). Auto culling blends it into each photo's score, uses it to pick the best of a burst, and can reject low-quality photos.",
+        license: "CC BY-NC-SA 4.0 (TOPIQ, Chaofeng Chen et al.; IQA-PyTorch weights; ONNX export by nocturna): non-commercial use",
+        repo: "nocturna/topiq-nr-koniq-onnx",
+        files: &[
+            ("model.onnx", 176_803_037, "9aa87559a8b8f6084ed5ab5eb0d489e1351ec9ad7e733213cdff14a5dccf34c2"),
+        ],
+        min_vram_mb: 0,
+        rank: 10,
+        multiple: 1,
+        dims: None,
+        gpu: false,
+        unzip: false,
+        non_commercial: true,
+    },
+    Spec {
+        id: "laion-aesthetic-v2",
+        kind: "aesthetic",
+        name: "LAION Aesthetic v2 · Aesthetics (culling)",
+        blurb: "Commercial-use MIT + Apache-2.0 pipeline (OpenAI CLIP ViT-L/14 + LAION Improved Aesthetic Predictor v2). Rates visual appeal, composition and light on a 1–10 scale for star ratings and choosing between good shots.",
+        license: "MIT (OpenAI CLIP ViT-L/14; ONNX by Xenova) + Apache-2.0 (LAION Improved Aesthetic Predictor v2, Christoph Schuhmann; ONNX by haor): commercial use allowed",
+        repo: "Xenova/clip-vit-large-patch14",
+        files: &[
+            ("onnx/vision_model_uint8.onnx", 306_348_826, "1bffe274bab282da1c079be283a63a065abaaa94dcf44516029c46dbd98ecf8a"),
+            ("@haor/aesthetics/aesthetic_score_mlp.onnx", 3_713_097, "cf90c78f235796692ed7f2ef9c4ed6a07f2052ff8d1be578760d8e30067c708d"),
+        ],
+        min_vram_mb: 0,
+        rank: 30,
+        multiple: 1,
+        dims: None,
+        gpu: false,
+        unzip: false,
+        non_commercial: false,
+    },
+    Spec {
+        id: "topiq-iaa-ava",
+        kind: "aesthetic",
+        name: "TOPIQ · Aesthetics (culling)",
+        blurb: "Rates how appealing a photo is (composition, light, colour, subject) on the AVA photo-contest scale (250,000 photos scored by photographers). Auto culling uses it for star ratings and to choose between good shots.",
+        license: "CC BY-NC-SA 4.0 (TOPIQ, Chaofeng Chen et al.; IQA-PyTorch weights trained on AVA; ONNX export by cromsc): non-commercial use",
+        repo: "cromsc/topiq-iaa-res50",
+        files: &[
+            ("topiq_iaa_res50.onnx", 279_929_608, "0fed3bc560c44c00a44dff9d00ddf1e0e4012679fb6ebff5dd19b2a7583e9266"),
+        ],
+        min_vram_mb: 0,
+        rank: 10,
+        multiple: 1,
+        dims: None,
+        gpu: false,
+        unzip: false,
+        non_commercial: true,
     },
 ];
 
@@ -763,6 +855,7 @@ pub struct ModelInfo {
     pub installed: bool,
     pub fits: bool,
     pub recommended: bool,
+    pub non_commercial: bool,
     /// why it is or is not the pick for this machine
     pub note: String,
 }
@@ -787,6 +880,9 @@ pub fn models(data: &Path, hw: &Hardware) -> Vec<ModelInfo> {
                     _ if m.kind == "align" => "PyTorch-to-ONNX exported on download (~200 MB FP16 ONNX). Sub-degree (~0.1°–0.5°) horizon & vertical alignment.".to_string(),
                     _ if m.kind == "inpaint" => "A fast alternative that runs on the CPU (about 2 seconds per removal) and only continues what is around the object.".to_string(),
                     _ if m.kind == "upscale" => "Best match for photos: it enlarges in 256 px tiles, so GPU memory is not the limit, only time.".to_string(),
+                    _ if m.id == "lumina-v2-int8" => "Commercial use allowed (MIT). Runs on the CPU: about 0.3 seconds per photo at native aspect ratio.".to_string(),
+                    _ if m.id == "laion-aesthetic-v2" => "Commercial use allowed (MIT + Apache-2.0). Runs on the CPU: about 0.4 seconds per photo.".to_string(),
+                    _ if m.kind == "quality" || m.kind == "aesthetic" => "Runs on the CPU: about a tenth of a second per photo, on top of decoding it.".to_string(),
                     Some(v) => format!("Best quality for {}: runs at {} px tiles in {:.0} GB.", hw.gpu.as_deref().unwrap_or("your GPU"), tile_for(Some(v)), v as f32 / 1024.0),
                     None => "Best match for this machine (GPU memory could not be read).".to_string(),
                 }
@@ -797,6 +893,8 @@ pub fn models(data: &Path, hw: &Hardware) -> Vec<ModelInfo> {
                     "PyTorch-to-ONNX exported on download (~200 MB FP16 ONNX). Ideal for interior room scenes and landscapes.".to_string()
                 } else if m.kind == "upscale" {
                     "An alternative to the recommended one: choose by the kind of picture (see above).".to_string()
+                } else if m.kind == "quality" || m.kind == "aesthetic" {
+                    "Non-commercial alternative (CC BY-NC-SA 4.0). Runs on the CPU: about a tenth of a second per photo.".to_string()
                 } else {
                     "Runs on your GPU; lower quality than the recommended one.".to_string()
                 }
@@ -821,6 +919,7 @@ pub fn models(data: &Path, hw: &Hardware) -> Vec<ModelInfo> {
                 installed: installed(data, m),
                 fits,
                 recommended,
+                non_commercial: m.non_commercial,
                 note,
             }
         })
@@ -885,6 +984,7 @@ pub fn remove(data: &Path, id: &str) -> Result<(), String> {
     *SD.lock().unwrap() = None;
     crate::moebius::reset();
     crate::perspective::reset();
+    crate::quality::reset();
     crate::segment::reset();
     Ok(())
 }
@@ -1748,6 +1848,25 @@ sd15-inpaint: mean error in the hole {err:.3} (was {:.3}) in {:?}", 0.95 - 0.45,
         let hw = Hardware { gpu: Some("Apple M4 Max".into()), vram_mb: Some(128 * 1024), free_vram_mb: None, budget_vram_mb: None, device: "CoreML".into() };
         let all = models(Path::new("/tmp"), &hw);
         assert!(all.iter().any(|m| m.id == "moebius"));
+    }
+
+    #[test]
+    fn culling_commercial_and_noncommercial_models_are_registered() {
+        let lumina = spec("lumina-v2-int8").expect("lumina-v2-int8 registered");
+        let laion = spec("laion-aesthetic-v2").expect("laion-aesthetic-v2 registered");
+        let topiq_q = spec("topiq-nr-koniq").expect("topiq-nr-koniq registered");
+        let topiq_a = spec("topiq-iaa-ava").expect("topiq-iaa-ava registered");
+        assert!(!lumina.non_commercial && !laion.non_commercial);
+        assert!(topiq_q.non_commercial && topiq_a.non_commercial);
+        assert!(lumina.rank > topiq_q.rank && laion.rank > topiq_a.rank);
+
+        let hw = Hardware { gpu: None, vram_mb: None, free_vram_mb: None, budget_vram_mb: None, device: "CPU".into() };
+        let all = models(Path::new("/tmp"), &hw);
+        assert!(all.iter().find(|m| m.id == "lumina-v2-int8").is_some_and(|m| m.recommended && !m.non_commercial));
+        assert!(all.iter().find(|m| m.id == "laion-aesthetic-v2").is_some_and(|m| m.recommended && !m.non_commercial));
+        assert!(all.iter().find(|m| m.id == "topiq-nr-koniq").is_some_and(|m| !m.recommended && m.non_commercial));
+        assert!(all.iter().find(|m| m.id == "topiq-iaa-ava").is_some_and(|m| !m.recommended && m.non_commercial));
+        assert!(all.iter().find(|m| m.id == "arcface-faces").is_some_and(|m| m.non_commercial));
     }
 
     const REAL_ESRGAN: [&str; 2] = ["realesrgan-x4plus", "realesrgan-x4plus-anime-6b"];

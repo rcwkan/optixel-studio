@@ -1,28 +1,43 @@
-import { listen } from "@tauri-apps/api/event";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AiHardware, AiModel, api, Settings } from "./api";
 import { Btn, HUE, Icon } from "./controls";
 
 const hint = "text-[10px] text-neutral-500";
 
-type SettingModelKey = "ai_align_model" | "ai_denoise_model" | "ai_removal_model" | "ai_select_model" | "ai_concept_model";
-type CategoryFilter = "all" | "geometry" | "denoise" | "retouch" | "masks" | "people" | "installed";
+export type ModelDownloadStore = {
+  active: { id: string; done: number; total: number } | null;
+  error: string | null;
+  download: (id: string) => Promise<void>;
+};
+
+type SettingModelKey =
+  | "ai_align_model"
+  | "ai_denoise_model"
+  | "ai_removal_model"
+  | "ai_select_model"
+  | "ai_concept_model"
+  | "ai_quality_model"
+  | "ai_aesthetic_model";
+type CategoryFilter = "all" | "geometry" | "denoise" | "retouch" | "masks" | "people" | "culling" | "installed";
 
 /** Settings → AI models: hardware summary, category filter bar, and organized AI model groups
  *  matching the Develop → AI workflow order (Tone & Geometry, Detail & Denoise, Retouch & Fill, People & Faces). */
-export function AiModelsSettings({ settings, setSettings }: { settings: Settings; setSettings: (s: Settings) => void }) {
+export function AiModelsSettings({ settings, setSettings, modelDl }: { settings: Settings; setSettings: (s: Settings) => void; modelDl: ModelDownloadStore }) {
   const [hw, setHw] = useState<AiHardware | null>(null);
   const [models, setModels] = useState<AiModel[]>([]);
-  const [dl, setDl] = useState<{ id: string; done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<CategoryFilter>("all");
+  const dl = modelDl.active;
+  const prevDl = useRef(dl);
 
   const load = () => api.aiModels().then((r) => (setHw(r.hardware), setModels(r.models)));
   useEffect(() => void load().catch((e) => setError(String(e))), []);
   useEffect(() => {
-    const un = listen<{ id: string; done: number; total: number }>("ai-model-progress", (e) => setDl(e.payload));
-    return () => void un.then((f) => f());
-  }, []);
+    if (prevDl.current && !dl) {
+      void load().catch((e) => setError(String(e)));
+    }
+    prevDl.current = dl;
+  }, [dl]);
 
   const pick = (key: SettingModelKey, id: string) => {
     const updated = { ...settings, [key]: id };
@@ -31,16 +46,9 @@ export function AiModelsSettings({ settings, setSettings }: { settings: Settings
   };
   const download = async (id: string) => {
     setError(null);
-    setDl({ id, done: 0, total: 1 });
-    try {
-      await api.aiDownload(id);
-      await load();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setDl(null);
-    }
+    await modelDl.download(id);
   };
+  const displayError = error ?? modelDl.error;
   const remove = (id: string) => void api.aiRemove(id).then(load);
 
   const fmtSize = (mb: number) => (mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(0)} MB`);
@@ -66,9 +74,12 @@ export function AiModelsSettings({ settings, setSettings }: { settings: Settings
           const busy = dl?.id === m.id;
           const pct = busy ? Math.round((dl!.done / Math.max(1, dl!.total)) * 100) : 0;
           const isCurrent = current === m.id;
+          const cpuOnly = ["quality", "aesthetic", "faces", "faceswap", "landmarks"].includes(m.kind);
+          const commercialCulling = !m.non_commercial && (m.kind === "quality" || m.kind === "aesthetic");
           return (
             <div
               key={m.id}
+              style={!isCurrent && m.non_commercial ? { borderColor: "var(--tint-red-border)" } : undefined}
               className={`rounded-md border px-3 py-2.5 transition-colors ${
                 isCurrent
                   ? "border-sky-600/80 bg-sky-950/25"
@@ -82,7 +93,27 @@ export function AiModelsSettings({ settings, setSettings }: { settings: Settings
                   <span className="font-medium text-neutral-100">{m.name}</span>
                   {m.recommended && (
                     <span className="rounded bg-emerald-600/80 px-1.5 py-0.5 text-[9px] font-semibold text-white">
-                      Recommended for your GPU
+                      {cpuOnly ? "Recommended" : "Recommended for your GPU"}
+                    </span>
+                  )}
+                  {commercialCulling && (
+                    <span
+                      className="rounded border px-1.5 py-0.5 text-[9px] font-semibold"
+                      style={{
+                        backgroundColor: "var(--tint-emerald-bg)",
+                        color: "var(--tint-emerald-text)",
+                        borderColor: "var(--tint-emerald-border)",
+                      }}
+                    >
+                      Commercial use OK
+                    </span>
+                  )}
+                  {m.non_commercial && (
+                    <span
+                      className="rounded bg-rose-600 px-1.5 py-0.5 text-[9px] font-semibold text-white"
+                      title="Licensed for non-commercial / research use only"
+                    >
+                      Non-commercial use only
                     </span>
                   )}
                   {!m.fits && (
@@ -117,6 +148,19 @@ export function AiModelsSettings({ settings, setSettings }: { settings: Settings
               </div>
 
               <div className="mt-1 text-neutral-300">{m.blurb}</div>
+              {m.non_commercial && (
+                <div
+                  className="mt-1.5 flex items-center gap-1.5 rounded border px-2 py-1 text-[10px] font-medium"
+                  style={{
+                    backgroundColor: "var(--tint-red-bg)",
+                    color: "var(--tint-red-text)",
+                    borderColor: "var(--tint-red-border)",
+                  }}
+                >
+                  <span aria-hidden>⚠</span>
+                  <span>Non-commercial / research use only — check the license terms below before using for commercial work.</span>
+                </div>
+              )}
               <div className={`${hint} mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5`}>
                 <span className="text-neutral-400">{m.note}</span>
                 <span>·</span>
@@ -151,12 +195,15 @@ export function AiModelsSettings({ settings, setSettings }: { settings: Settings
   const landmarkModels = models.filter((m) => m.kind === "landmarks");
   const clickModels = models.filter((m) => m.kind === "segment");
   const conceptModels = models.filter((m) => m.kind === "concept");
+  const qualityModels = models.filter((m) => m.kind === "quality");
+  const aestheticModels = models.filter((m) => m.kind === "aesthetic");
 
   const showGeometry = filter === "all" || filter === "geometry" || filter === "installed";
   const showDenoise = filter === "all" || filter === "denoise" || filter === "installed";
   const showRetouch = filter === "all" || filter === "retouch" || filter === "installed";
   const showPeople = filter === "all" || filter === "people" || filter === "installed";
   const showMasks = filter === "all" || filter === "masks" || filter === "installed";
+  const showCulling = filter === "all" || filter === "culling" || filter === "installed";
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
@@ -215,6 +262,7 @@ export function AiModelsSettings({ settings, setSettings }: { settings: Settings
                 ["retouch", "Retouch & Fill"],
                 ["masks", "Selection & Masks"],
                 ["people", "People & Faces"],
+                ["culling", "Culling"],
                 ["installed", `Installed (${installedModels.length + 1})`],
               ] as [CategoryFilter, string][]
             ).map(([id, label]) => (
@@ -234,10 +282,10 @@ export function AiModelsSettings({ settings, setSettings }: { settings: Settings
           </div>
         </section>
 
-        {error && (
+        {displayError && (
           <div className="rounded-lg border border-red-800/70 bg-red-950/30 p-3 text-red-300">
             <div className="font-semibold">Model operation failed</div>
-            <p className="mt-0.5 break-words text-[10px]">{error}</p>
+            <p className="mt-0.5 break-words text-[10px]">{displayError}</p>
           </div>
         )}
 
@@ -445,6 +493,43 @@ export function AiModelsSettings({ settings, setSettings }: { settings: Settings
               <h3 className="mb-1.5 font-semibold text-neutral-200">Select by name &amp; Auto masks · SAM 3</h3>
               <p className={`${hint} mb-1.5`}>Type what to select (&ldquo;sky&rdquo;, &ldquo;person&rdquo;, &ldquo;red car&rdquo;): every instance is found. Auto masks use it for subject, sky, people and background.</p>
               {renderModelList(conceptModels, "ai_concept_model")}
+            </div>
+          </section>
+        )}
+
+        {/* GROUP 6: CULLING · PHOTO QUALITY & AESTHETICS */}
+        {showCulling && (
+          <section className="rounded-lg border border-neutral-800 bg-neutral-900 p-4 space-y-4">
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-2.5">
+              <div className="flex items-center gap-2">
+                <span className={HUE.amber.text}>
+                  <Icon d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z" />
+                </span>
+                <div>
+                  <h2 className="text-xs font-semibold text-neutral-100">6. Culling · Photo Quality &amp; Aesthetics</h2>
+                  <p className={hint}>
+                    Used by Auto → Catalog &amp; Culling: scores blend into each photo&apos;s rating, pick the best of each burst, and can reject low-quality photos. Runs on the CPU on this computer.
+                  </p>
+                </div>
+              </div>
+              <span
+                className="rounded border px-2 py-0.5 text-[10px] font-medium"
+                style={{
+                  backgroundColor: "var(--tint-amber-bg)",
+                  color: "var(--tint-amber-text)",
+                  borderColor: "var(--tint-amber-border)",
+                }}
+              >
+                Auto culling
+              </span>
+            </div>
+            <div>
+              <h3 className="mb-1.5 font-semibold text-neutral-200">Technical quality (Blur, Noise, Exposure)</h3>
+              {renderModelList(qualityModels, "ai_quality_model")}
+            </div>
+            <div>
+              <h3 className="mb-1.5 font-semibold text-neutral-200">Aesthetics (Composition, Light &amp; Appeal)</h3>
+              {renderModelList(aestheticModels, "ai_aesthetic_model")}
             </div>
           </section>
         )}
