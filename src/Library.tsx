@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { message, open } from "@tauri-apps/plugin-dialog";
 import { ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, AutoFunction, CloudAccount, CloudFolder, Culling, fileManagerName, Filter, flagName, FolderLoading, FolderProgress, ImmichAlbum, JobProgress, LABEL_COLORS, LABELS, NetworkDrive, Photo, Settings, Source, thumbUrl } from "./api";
-import { AutoView, FUNCS } from "./AutoView";
+import { AutoJobsStore, AutoView, FUNCS } from "./AutoView";
 import { Btn, HUE, Hue, Icon, Panel, Stars } from "./controls";
 import { FaceSearch } from "./People";
 import { PhotoViewer } from "./PhotoViewer";
@@ -62,7 +62,9 @@ type Props = {
   onOpenCompare?: () => void;
   autoFn?: AutoFunction | null;
   onSelectAutoFn?: (fn: AutoFunction | null) => void;
+  openAutoRev?: number;
   jobs?: Record<string, JobProgress>;
+  autoJobs: AutoJobsStore;
   onAiSettings?: () => void;
   workingIds?: number[];
   busyAiIds?: number[];
@@ -81,6 +83,9 @@ export function Library(p: Props) {
     else setInternalAutoFn(fn);
   };
   const [panel, setPanel] = useState(true);
+  useEffect(() => {
+    if (p.openAutoRev) setPanel(true);
+  }, [p.openAutoRev]);
   const openPanel = (fn: AutoFunction | null) => (setAutoFn(fn), setPanel(true));
 
   const [size, setSize] = useState(170);
@@ -188,7 +193,9 @@ export function Library(p: Props) {
     { source: "amazon", label: "Amazon Photos", hint: "Your Amazon Photos sync folder", on: !!p.settings?.amazon_photos_path, dir: amazonDir, sync: ["↻", "Sync Amazon Photos", p.onSyncAmazon] },
     { source: "adobe", label: "Adobe Cloud Photos", hint: "Creative Cloud Files or Lightroom", on: !!p.settings?.adobe_cloud_path, dir: adobeDir, sync: ["↻", "Sync Adobe Cloud", p.onSyncAdobe] },
   ];
-  const running = (fn: AutoFunction) => Object.values(p.jobs ?? {}).some((j) => j.job.startsWith(`${fn}-`) || (fn === "cull" && j.job.startsWith("on-import-")));
+  const running = (fn: AutoFunction) =>
+    Boolean(p.autoJobs.running[fn]) ||
+    Object.values(p.jobs ?? {}).some((j) => j.job.startsWith(`${fn}-`) || (fn === "cull" && j.job.startsWith("on-import-")));
   // A button of the right bar, in its function's colour (Info: the theme's accent); choosing the one that is
   // open folds the panel away.
   const rail = (fn: AutoFunction | null, d: string, label: string, title: string, h?: (typeof HUE)[Hue], busy = false) => {
@@ -1030,6 +1037,7 @@ export function Library(p: Props) {
               selected={p.selected}
               view={p.photos}
               jobs={p.jobs ?? {}}
+              autoJobs={p.autoJobs}
               onShow={(ids, label) => p.setFilter({ ...p.filter, ids, view: `auto:${label}`, folder: null, immich_album: null })}
               onAiSettings={p.onAiSettings ?? (() => {})}
               onStorage={p.onStorage}

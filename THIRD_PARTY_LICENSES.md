@@ -95,6 +95,18 @@ Optixel Studio provides client-side neural processing for photographic retouchin
    - *License*: BSD 3-Clause License
    - *Attribution*: Xintao Wang et al. ("Real-ESRGAN: Training Real-World Blind Super-Resolution with Pure Synthetic Data"); ONNX exports by thisismert on Hugging Face.
 
+8. **TOPIQ (topiq-nr-koniq and topiq-iaa-ava)**
+   - *License*: Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) — non-commercial use only
+   - *Attribution*: Chaofeng Chen et al. ("TOPIQ: A Top-down Approach from Semantics to Distortions for Image Quality Assessment", IEEE Transactions on Image Processing, 2024); IQA-PyTorch weights; ONNX exports by nocturna and cromsc on Hugging Face.
+
+9. **Lumina v2 (`lumina_v2.int8.onnx`)**
+   - *License*: MIT License (ConvNeXt-Base CLIP backbone under Apache License 2.0) — commercial use allowed
+   - *Attribution*: sawabedarain / DarainHyder (`sawabedarain/lumina-iqa` on Hugging Face).
+
+10. **LAION Improved Aesthetic Predictor v2 + OpenAI CLIP ViT-L/14**
+   - *License*: MIT License (OpenAI CLIP ViT-L/14; ONNX conversion by Xenova) and Apache License 2.0 (LAION Improved Aesthetic Predictor v2; ONNX conversion by haor) — commercial use allowed
+   - *Attribution*: OpenAI (CLIP), Christoph Schuhmann / LAION (`improved-aesthetic-predictor`), Xenova, and haor on Hugging Face.
+
 ---
 
 ## 4. Frontend UI Stack

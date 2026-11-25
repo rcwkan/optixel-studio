@@ -62,6 +62,10 @@ pub struct Metrics {
     pub eye_openness: Option<f32>,
     /// A face (from the face scan) with both eyes shut, by its landmarks. Never without faces.
     pub blink_detected: bool,
+    /// Technical photo quality (0-100) from local AI quality model (Lumina v2 or TOPIQ), or None without the model.
+    pub ai_quality: Option<f32>,
+    /// Aesthetic appeal (0-100) from local AI aesthetics model (LAION Aesthetic v2 or TOPIQ), or None without the model.
+    pub ai_aesthetic: Option<f32>,
 }
 
 /// Display-referred (sRGB-encoded) colour 0-1, row-major: what the analysis looks at.
@@ -349,6 +353,8 @@ pub fn analyse(img: &DynamicImage, edge: u32, judge: u32, subject: Option<[f32; 
         edges: es.len() as u32,
         noise: n * 255.0,
         phash: format!("{:016x}", phash(&small.luma(), small.w, small.h)),
+        ai_quality: None,
+        ai_aesthetic: None,
         ..Default::default()
     };
     exposure(&small, &mut m);

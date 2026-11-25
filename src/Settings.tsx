@@ -5,8 +5,8 @@ import { useEffect, useState } from "react";
 import { Agent, Log } from "./Agent";
 import { api, AppInfo, CleanUp, JobProgress, Settings, size, Source, StorageMoveMode, StorageReport, StorageValidation, UpdateInfo } from "./api";
 import { Btn } from "./controls";
-import { Duplicate, Locations } from "./Storage";
-import { AiModelsSettings } from "./AiModels";
+import { Duplicate, DuplicateJobStore, Locations } from "./Storage";
+import { AiModelsSettings, ModelDownloadStore } from "./AiModels";
 import { applyTheme, getStoredTheme, isSystemDark, Theme, THEMES } from "./theme";
 
 const card = "rounded-lg border border-neutral-800 bg-neutral-900 p-4";
@@ -35,6 +35,8 @@ export function SettingsView(p: {
   setSettings: (s: Settings) => void;
   selected: number[];
   jobs: Record<string, JobProgress>;
+  dupJobs: DuplicateJobStore;
+  modelDl: ModelDownloadStore;
   onConnect: (s: Source) => void;
   onAuto: () => void;
   info?: AppInfo | null;
@@ -46,6 +48,8 @@ export function SettingsView(p: {
   updateLoading?: boolean;
 }) {
   const reload = () => void api.settings().then(p.setSettings);
+  const dupBusy = Boolean(p.dupJobs.job) || Object.values(p.jobs).some((j) => j.job.startsWith("duplicate-"));
+  const aiBusy = Boolean(p.modelDl.active);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <nav className="flex shrink-0 items-center gap-1 border-b border-neutral-800 bg-neutral-900 px-4 py-1.5 text-[12px]">
@@ -56,13 +60,15 @@ export function SettingsView(p: {
             {t === "about" && p.updateAvailable && (
               <span className="h-1.5 w-1.5 rounded-full bg-[var(--theme-accent,#0ea5e9)] animate-pulse" />
             )}
+            {t === "duplicate" && dupBusy && <span className="h-1.5 w-1.5 rounded-full bg-sky-400 animate-pulse" />}
+            {t === "ai" && aiBusy && <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />}
           </button>
         ))}
       </nav>
       {p.settings && p.tab === "appearance" && <Appearance settings={p.settings} setSettings={p.setSettings} />}
       {p.settings && p.tab === "locations" && <Locations settings={p.settings} setSettings={p.setSettings} onConnect={p.onConnect} onAuto={p.onAuto} />}
-      {p.settings && p.tab === "duplicate" && <Duplicate settings={p.settings} selected={p.selected} jobs={p.jobs} />}
-      {p.settings && p.tab === "ai" && <AiModelsSettings settings={p.settings} setSettings={p.setSettings} />}
+      {p.settings && p.tab === "duplicate" && <Duplicate settings={p.settings} selected={p.selected} jobs={p.jobs} dupJobs={p.dupJobs} />}
+      {p.settings && p.tab === "ai" && <AiModelsSettings settings={p.settings} setSettings={p.setSettings} modelDl={p.modelDl} />}
       {(p.tab === "storage" || p.tab === "usage") && <Usage onSettingsChanged={reload} onGoToAiModels={() => p.setTab("ai")} />}
       {p.tab === "agent" && (
         <Agent

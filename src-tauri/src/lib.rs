@@ -14,6 +14,7 @@ mod libraw;
 mod mcp;
 mod moebius;
 mod perspective;
+mod quality;
 mod remote;
 mod retouch;
 mod sdfill;
@@ -73,6 +74,9 @@ pub struct Settings {
     /// empty: the best one installed.
     pub ai_select_model: String,
     pub ai_concept_model: String,
+    /// Auto culling quality and aesthetic models (aimodel.rs ids); empty: best installed.
+    pub ai_quality_model: String,
+    pub ai_aesthetic_model: String,
     /// Shares on a NAS or server, browsed in place like folders.
     pub network_drives: Vec<storage::NetworkDrive>,
     /// Cloud storage accounts; their secrets are in the keychain.
@@ -108,6 +112,8 @@ impl Default for Settings {
             ai_align_model: String::new(),
             ai_select_model: String::new(),
             ai_concept_model: String::new(),
+            ai_quality_model: String::new(),
+            ai_aesthetic_model: String::new(),
             network_drives: vec![],
             clouds: vec![],
             auto_check_updates: true,

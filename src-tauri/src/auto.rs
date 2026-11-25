@@ -70,6 +70,13 @@ pub struct CullSettings {
     pub keep_manual: bool,
     /// Reject portrait/subject photos where closed eyes (blink) are detected.
     pub reject_blinks: bool,
+    /// Use the downloadable TOPIQ AI quality models when installed.
+    pub ai_quality: bool,
+    /// Percentage of the overall score (0-100) taken from the AI quality models.
+    pub ai_weight: f32,
+    /// Reject photos whose AI technical quality score (0-100) is below `quality_threshold`.
+    pub reject_low_quality: bool,
+    pub quality_threshold: f32,
 }
 impl Default for CullSettings {
     fn default() -> Self {
@@ -90,6 +97,10 @@ impl Default for CullSettings {
             ai_keywords: false,
             keep_manual: true,
             reject_blinks: true,
+            ai_quality: true,
+            ai_weight: 60.0,
+            reject_low_quality: false,
+            quality_threshold: 30.0,
         }
     }
 }
@@ -617,9 +628,20 @@ fn measure(core: &Core, p: &Photo, detail: &str, subject: Option<[f32; 4]>) -> R
     // one statement each: a statement's DB lock is held to its end
     let eyes = crate::faces::photo_eyes(&core.db(), master);
     let boxes = crate::faces::photo_boxes(&core.db(), master);
-    // installing the landmark model changes what is known about eyes
+    // installing the landmark or quality models changes what is measured
     let landmarks = crate::aimodel::model_file(&core.dir(), "face-landmarks-2dfan4", crate::faceswap::LANDMARKS).is_some();
-    let key = format!("{}/l{}", stamp(p, detail, eyes.len()), landmarks as u8);
+    let (chosen_q, chosen_a) = {
+        let s = core.settings.lock().unwrap();
+        (s.ai_quality_model.clone(), s.ai_aesthetic_model.clone())
+    };
+    let (tech_id, aes_id) = crate::quality::active(&core.dir(), &chosen_q, &chosen_a);
+    let key = format!(
+        "{}/l{}/q{}/a{}",
+        stamp(p, detail, eyes.len()),
+        landmarks as u8,
+        tech_id.unwrap_or("none"),
+        aes_id.unwrap_or("none")
+    );
     if subject.is_none()
         && let Some(m) = catalog::analysis(&core.db(), &p.path, &key)
     {
@@ -642,7 +664,28 @@ fn measure(core: &Core, p: &Photo, detail: &str, subject: Option<[f32; 4]>) -> R
             m.blink_detected = shut < crate::faces::BLINK_EAR;
         }
     }
-    if subject.is_none() {
+    let mut ai_failed = false;
+    if tech_id.is_some() || aes_id.is_some() {
+        let rgb = vision::Rgb::from_image(&img, 768);
+        let (t, a) = crate::quality::score(&core.dir(), &rgb, tech_id, aes_id);
+        match t {
+            Some(Ok(v)) => m.ai_quality = Some(v),
+            Some(Err(e)) => {
+                core.log("auto", format!("AI quality: {e}"));
+                ai_failed = true;
+            }
+            None => {}
+        }
+        match a {
+            Some(Ok(v)) => m.ai_aesthetic = Some(v),
+            Some(Err(e)) => {
+                core.log("auto", format!("AI quality: {e}"));
+                ai_failed = true;
+            }
+            None => {}
+        }
+    }
+    if subject.is_none() && !ai_failed {
         catalog::save_analysis(&core.db(), &p.path, &key, &m)?;
     }
     Ok(m)
@@ -745,6 +788,25 @@ fn quality(m: &Metrics, subject: bool) -> f32 {
     0.6 * sharp + 0.3 * m.exposure + 0.1 * (100.0 - noise)
 }
 
+/// Overall culling score 0-100, blending `quality` with the local AI scores when enabled and installed.
+fn cull_score(m: &Metrics, s: &CullSettings) -> f32 {
+    let base = quality(m, s.use_subject);
+    if !s.ai_quality || !s.ai_weight.is_finite() {
+        return base;
+    }
+    let ai = match (
+        m.ai_quality.filter(|v| v.is_finite()),
+        m.ai_aesthetic.filter(|v| v.is_finite()),
+    ) {
+        (Some(t), Some(a)) => 0.6 * t + 0.4 * a,
+        (Some(t), None) => t,
+        (None, Some(a)) => a,
+        (None, None) => return base,
+    };
+    let w = (s.ai_weight / 100.0).clamp(0.0, 1.0);
+    (1.0 - w) * base + w * ai
+}
+
 fn stars(q: f32) -> i64 {
     match q {
         q if q >= 85.0 => 5,
@@ -827,7 +889,7 @@ pub fn cull(core: &Arc<Core>, ids: &[i64], s: &CullSettings, provider: &str, job
     for (i, &b) in burst.iter().enumerate() {
         members.entry(b).or_default().push(i);
     }
-    let q: Vec<f32> = metrics.iter().map(|m| m.as_ref().map_or(0.0, |m| quality(m, s.use_subject))).collect();
+    let q: Vec<f32> = metrics.iter().map(|m| m.as_ref().map_or(0.0, |m| cull_score(m, s))).collect();
     // rejections first: the best of a burst is chosen among the rest
     let mut reasons: Vec<Vec<String>> = vec![vec![]; n];
     for (i, m) in metrics.iter().enumerate() {
@@ -846,6 +908,9 @@ pub fn cull(core: &Arc<Core>, ids: &[i64], s: &CullSettings, provider: &str, job
         }
         if s.reject_blinks && m.blink_detected {
             reasons[i].push("closed eyes".into());
+        }
+        if s.ai_quality && s.reject_low_quality && m.ai_quality.is_some_and(|t| t < s.quality_threshold) {
+            reasons[i].push("low quality (AI)".into());
         }
     }
     let best: HashMap<usize, usize> = members
@@ -904,7 +969,9 @@ pub fn cull(core: &Arc<Core>, ids: &[i64], s: &CullSettings, provider: &str, job
                         "red"
                     } else if u.flag.as_deref() == Some("pick") {
                         "green"
-                    } else if (sharp - s.blur_threshold).abs() < 10.0 {
+                    } else if (sharp - s.blur_threshold).abs() < 10.0
+                        || (s.ai_quality && s.reject_low_quality && m.ai_quality.is_some_and(|t| (t - s.quality_threshold).abs() < 10.0))
+                    {
                         "yellow"
                     } else {
                         "none"
@@ -928,6 +995,7 @@ pub fn cull(core: &Arc<Core>, ids: &[i64], s: &CullSettings, provider: &str, job
             "id": p.id, "file": file_name(p), "quality": q[i].round(), "sharpness": m.sharpness.round(),
             "subject_sharpness": m.subject_sharpness.round(), "focus_peaking": m.focus_peaking_score.round(),
             "eye_openness": m.eye_openness.map(|e| (e * 100.0).round()), "blink": m.blink_detected,
+            "ai_quality": m.ai_quality.map(f32::round), "ai_aesthetic": m.ai_aesthetic.map(f32::round),
             "exposure": m.exposure.round(), "noise": (m.noise * 10.0).round() / 10.0,
             "motion": (m.motion * 100.0).round(), "burst": in_burst.then_some(group.len()), "best": is_best,
             "flag": u.flag, "rating": u.rating, "label": u.color_label, "reasons": why, "keywords": tags,
@@ -937,6 +1005,14 @@ pub fn cull(core: &Arc<Core>, ids: &[i64], s: &CullSettings, provider: &str, job
     }
     // subject and scene keywords from the AI provider, one photo at a time
     let mut notes: Vec<String> = vec![];
+    let (chosen_q, chosen_a) = {
+        let st = core.settings.lock().unwrap();
+        (st.ai_quality_model.clone(), st.ai_aesthetic_model.clone())
+    };
+    let (tech_id, aes_id) = crate::quality::active(&core.dir(), &chosen_q, &chosen_a);
+    if s.ai_quality && tech_id.is_none() && aes_id.is_none() {
+        notes.push("Download the AI quality and aesthetics models (Settings → AI models → Culling) for scores closer to how people judge photos".into());
+    }
     if s.ai_keywords && !job.cancelled() {
         let mut errors = 0;
         for (k, (id, u)) in changes.iter_mut().enumerate() {
@@ -964,6 +1040,7 @@ pub fn cull(core: &Arc<Core>, ids: &[i64], s: &CullSettings, provider: &str, job
     Ok(json!({
         "total": n, "picks": picks, "rejects": rejects, "rated": rated, "labelled": labelled, "keyworded": tagged,
         "bursts": members.values().filter(|v| v.len() > 1).count(), "kept": kept, "failed": failed, "notes": notes, "rows": rows,
+        "ai": { "quality": tech_id.is_some(), "aesthetic": aes_id.is_some(), "quality_model": tech_id, "aesthetic_model": aes_id },
     }))
 }
 
@@ -1840,7 +1917,8 @@ mod tests {
         assert!(sharp.flag != -1 && sharp.rating >= 3, "sharp photo: {sharp:?} {r}");
         assert_eq!(soft.flag, -1, "blurred photo not rejected: {r}");
         assert!(sharp.keywords.contains("horizontal") && soft.keywords.contains("blurry"), "{} / {}", sharp.keywords, soft.keywords);
-        assert!(catalog::analysis(&core.db(), &sharp.path, &format!("{}/l{}", stamp(&sharp, "full", 0), crate::aimodel::model_file(&core.dir(), "face-landmarks-2dfan4", crate::faceswap::LANDMARKS).is_some() as u8)).is_some(), "measurements are cached");
+        let (tech_id, aes_id) = crate::quality::active(&core.dir(), "", "");
+        assert!(catalog::analysis(&core.db(), &sharp.path, &format!("{}/l{}/q{}/a{}", stamp(&sharp, "full", 0), crate::aimodel::model_file(&core.dir(), "face-landmarks-2dfan4", crate::faceswap::LANDMARKS).is_some() as u8, tech_id.unwrap_or("none"), aes_id.unwrap_or("none"))).is_some(), "measurements are cached");
 
         let r = run(&core, "blur", &ids, &json!({ "detail": "full", "action": "label" }), &job).unwrap();
         assert_eq!(r["found"], 2, "{r}");
@@ -1916,5 +1994,31 @@ mod tests {
         assert!(core.jobs.lock().unwrap().is_empty());
         assert!(current_job_control().is_none());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cull_score_blends_heuristic_and_ai() {
+        let mut m = Metrics {
+            edges: 500,
+            sharpness: 80.0,
+            subject_sharpness: 80.0,
+            exposure: 70.0,
+            noise: 2.0,
+            ..Default::default()
+        };
+        let mut s = CullSettings::default();
+        assert!(s.ai_quality);
+        assert!(!s.reject_low_quality);
+
+        let base = quality(&m, s.use_subject);
+        assert_eq!(cull_score(&m, &s), base);
+
+        m.ai_quality = Some(80.0);
+        m.ai_aesthetic = Some(50.0);
+        s.ai_weight = 100.0;
+        assert!((cull_score(&m, &s) - 68.0).abs() < 1e-4);
+
+        s.ai_weight = 0.0;
+        assert!((cull_score(&m, &s) - base).abs() < 1e-4);
     }
 }
