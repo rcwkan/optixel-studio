@@ -373,8 +373,11 @@ fn original_from_immich(core: &Core, id: &str, creds: impl FnOnce() -> Result<(S
 
 pub(crate) fn open_browser(url: &str) -> Result<(), String> {
     let parsed = tauri::Url::parse(url).map_err(|e| format!("invalid URL ({e}): {url}"))?;
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
         return Err(format!("refusing to open non-http/https URL: {url}"));
+    }
+    if url.chars().any(|c| c.is_control() || c.is_whitespace() || "\"'<>^`$|".contains(c)) {
+        return Err("invalid characters in browser URL".into());
     }
     let (prog, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
         ("open", &["--"])
